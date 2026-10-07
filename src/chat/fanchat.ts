@@ -265,7 +265,13 @@ export class FanChat extends DurableObject<Env> {
     }
     const history = await recentMessages(env, s.memberId, s.fanId, HISTORY);
     const unread = history.filter((m) => m.role === "fan" && m.id > s.answeredUpTo).map((m) => m.text).join("\n");
-    const situation = { asksIfReal: asksIfReal(unread), minorFlag: minorCoded(unread) };
+    const fanMessages = history.filter((m) => m.role === "fan").length;
+    const offeredBefore = (await fanSales(env, s.memberId, s.fanId)).length > 0;
+    const situation = {
+      asksIfReal: asksIfReal(unread),
+      minorFlag: minorCoded(unread),
+      shouldOffer: fanMessages >= 5 && !offeredBefore,
+    };
     if (s.source === "fanvue") {
       s.mode = modeOf(settings);
       if (s.mode === "dryrun") await this.out(s, `👀 <b>Dry-run</b> · @${esc(s.handle ?? "fan")} wrote:\n<i>${esc(unread)}</i>`);
@@ -363,10 +369,12 @@ export class FanChat extends DurableObject<Env> {
 
     const parsed = parseCompletion(job.output);
     const fan = await getFan(env, s.memberId, s.fanId);
+    const history = await recentMessages(env, s.memberId, s.fanId, 30);
     let profile: FanProfile = fan?.profile ?? {};
     let messages: string[] | null = null;
     let problem: string | null = null;
     const ppvs: Outgoing[] = [];
+    let saleFailed = false; // a send_ppv / generate_image was refused: her text may promise it, so redo the turn
 
     if (parsed.calls.length) {
       turn.convo.push(parsed.raw);
@@ -401,14 +409,20 @@ export class FanChat extends DurableObject<Env> {
           }));
         } else if (call.name === "send_ppv" && turn.canSell) {
           const ppv = await this.checkPpv(s, call.args);
-          if ("error" in ppv) result = { error: ppv.error };
+          if ("error" in ppv) {
+            result = { error: `${ppv.error} Nothing was sent. Write your reply again so it matches what you actually send.` };
+            saleFailed = true;
+          }
           else {
             ppvs.push(ppv);
             result = { status: "sending" };
           }
         } else if (call.name === "generate_image" && turn.canGenerate) {
           const started = await startGeneration(env, s.memberId, s.fanId, s.source, call.args);
-          if ("error" in started) result = { error: started.error };
+          if ("error" in started) {
+            result = { error: `${started.error} Write your reply again to match.` };
+            saleFailed = true;
+          }
           else {
             result = { status: started.ok };
             if (started.simMessage) ppvs.push(started.simMessage);
@@ -419,6 +433,24 @@ export class FanChat extends DurableObject<Env> {
     } else if (parsed.text) {
       messages = textAsMessages(parsed.text);
       problem = messages.map(checkHerReply).find(Boolean) ?? null;
+    }
+
+    // Never repeat his words or her own earlier lines word for word.
+    if (messages && !problem) {
+      const seen = new Set(history.slice(-30).map((m) => m.text.trim().toLowerCase()));
+      const repeat = messages.find((m) => seen.has(m.trim().toLowerCase()));
+      if (repeat) problem = `repeats an earlier message word for word ("${repeat}")`;
+    }
+    if (saleFailed && turn.regens < 2) {
+      turn.regens++;
+      // Her texts from this attempt weren't sent either: say so, so she rewrites them.
+      for (const m of turn.convo) {
+        if (m.role === "tool" && m.content === JSON.stringify({ status: "sent" })) {
+          m.content = JSON.stringify({ error: "Not sent: rewrite it together with the photo you actually send." });
+        }
+      }
+      await this.submitTurn(s); // she sees what was refused and rewrites everything
+      return;
     }
 
     if (messages && problem) {

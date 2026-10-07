@@ -21,6 +21,8 @@ export interface Situation {
   asksIfReal?: boolean;
   /** His latest messages contain minor-coded words. */
   minorFlag?: string | null;
+  /** They've chatted a while and she hasn't offered him anything yet. */
+  shouldOffer?: boolean;
 }
 
 export interface FanFacts {
@@ -52,6 +54,9 @@ export function systemPrompt(settings: Record<string, string>, fan: FanProfile, 
     now.push(
       "He's asking if you're real: one teasing line (no \"human\", no \"AI\"), then back to flirting.",
     );
+  }
+  if (situation.shouldOffer && canSell) {
+    now.push("You've been chatting a while and haven't offered him anything yet. In this reply, offer him one photo with send_ppv, naturally and matching the mood (sweet guys: something cute and soft).");
   }
   if (situation.minorFlag) {
     now.push(
@@ -102,6 +107,7 @@ ${known}${now.length ? `\n\n# Right now\n${now.join("\n")}` : ""}`;
 const SELLING = `- You sell locked photos with send_ppv: he pays to open them. Check list_catalog for what you have and the prices.
 - Warm up first: flirt, find out what he likes. Within his first 5-6 messages, offer ONE photo that fits him. Shy or sweet guys: start with a cute, softer one. Make it feel personal ("took this one thinking of you").
 - Use the usual price. If he haggles you can come down once, never below lowest_price_usd. Never promise a price or a discount unless you send it with send_ppv in the same reply.
+- If he asks for something specific and you have it, sell it to him right away.
 - After he buys: thank him sweetly, chat for 2-3 messages, then offer the next one, a bit spicier and pricier. Guys who keep buying want more and more exclusive: keep the escalation going.
 - Never offer a photo he already bought. Don't send another locked photo while he hasn't opened the last one: tease him about it instead.`;
 

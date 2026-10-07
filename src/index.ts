@@ -15,7 +15,7 @@ import { FAN_TYPES } from "./sim/fans";
 import { handleCallback, trySetupWebhook } from "./fanvue/connect";
 import { handleWebhook, pollUnread } from "./fanvue/inbound";
 import { catalogTick } from "./catalog/catalog";
-import { generationTick } from "./photos/generate";
+import { generationTick, review } from "./photos/generate";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -120,6 +120,10 @@ async function admin(env: Env, request: Request, url: URL): Promise<Response> {
     } catch (e) {
       return Response.json({ ok: false, error: String((e as Error).message) });
     }
+  }
+  if (url.pathname === "/admin/review" && body.id) {
+    // Same as tapping ✅ / ❌ under a photo in Telegram.
+    return Response.json({ result: await review(env, Number(body.id), body.approve === true) });
   }
   if (url.pathname === "/admin/fanvue-webhook") {
     return Response.json({ error: await trySetupWebhook(env, owner.id, url.origin) });
