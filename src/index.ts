@@ -7,6 +7,7 @@ import "./env";
 import { handleUpdate } from "./control/bot";
 import { createClaimCode, getOwner } from "./db";
 import { tg, webhookSecret } from "./telegram";
+import { FAN_TYPES } from "./sim/fans";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -25,6 +26,8 @@ export default {
     }
 
     if (url.pathname === "/setup") return setupPage(env, url);
+
+    if (url.pathname.startsWith("/admin/") && request.method === "POST") return admin(env, request, url);
 
     return page("AI chatter", "<p>✅ The AI chatter is running.</p><p>First time? Open <a href=\"/setup\">/setup</a>.</p>");
   },
@@ -58,6 +61,34 @@ async function setupPage(env: Env, url: URL): Promise<Response> {
     <p>Last step: link it to <b>your</b> Telegram account, so it only listens to you.</p>
     <p><a class="button" href="${link}">Open ${bot} in Telegram</a></p>
     <p class="small">Then tap <b>Start</b> in Telegram. Don't share this page's link: whoever taps it first becomes the owner.</p>`);
+}
+
+/**
+ * For testing from a script (only if ADMIN_KEY is set): start a simulation or
+ * send a message as the owner's test fan. Output goes to the owner's Telegram.
+ *   POST /admin/simulate {"type": "shy"}
+ *   POST /admin/fan-message {"text": "hey"}
+ */
+async function admin(env: Env, request: Request, url: URL): Promise<Response> {
+  if (!env.ADMIN_KEY || request.headers.get("Authorization") !== `Bearer ${env.ADMIN_KEY}`) {
+    return new Response("not found", { status: 404 });
+  }
+  const owner = await getOwner(env);
+  if (!owner) return Response.json({ error: "no owner yet" }, { status: 409 });
+  const body: any = await request.json().catch(() => ({}));
+
+  if (url.pathname === "/admin/simulate" && FAN_TYPES[body.type]) {
+    const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:sim`));
+    await chat.simulate(owner.id, owner.telegram_chat_id, body.type);
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/admin/fan-message" && typeof body.text === "string") {
+    const fanId = `test:${owner.telegram_user_id}`;
+    const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:${fanId}`));
+    await chat.receive(owner.id, fanId, "test", owner.telegram_chat_id, body.text);
+    return Response.json({ ok: true });
+  }
+  return Response.json({ error: "unknown admin action" }, { status: 400 });
 }
 
 function page(title: string, body: string): Response {
