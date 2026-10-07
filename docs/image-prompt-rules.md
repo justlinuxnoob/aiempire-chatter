@@ -58,7 +58,20 @@ Read from justlinuxnoob/ai-empire-telegram-bot (`cloudflare/worker.js`, `handler
 - `lora_url` accepts Dropbox (`dl=0` → `dl=1` is done by the generator), Google Drive and Hugging Face links.
 - The bot appends "candid smartphone photo, natural skin texture" if missing; the chatter's rules already include it.
 
-Still to check before step 5: krea2-nsfw-serverless (the NSFW endpoint), whether it takes the same input.
+Read from justlinuxnoob/krea2-nsfw-serverless (`serverless/handler.py`, `cloudflare/worker.js`):
+
+- NSFW job input: `{"input": {"prompt", "lora_url", "seed"?}}`. No width/height/strength
+  (the workflow fixes them; the character LoRA goes in slot 3 at strength 1.0).
+- Same output as SFW: without Telegram fields → `{"ok": true, "seed", "image": "<base64 JPEG>"}`;
+  on failure `{"error": "..."}`.
+- First photo after a break: 1–3 minutes (README); the owner has seen ~10 minutes.
+
+So the chatter sends:
+
+| | SFW endpoint | NSFW endpoint |
+|---|---|---|
+| input | prompt, lora_url, lora_strength 0.9, width 1024, height 1536 | prompt, lora_url |
+| prompt | built per the SFW rules above | built per the NSFW rules above |
 
 ## Change of plan
 
