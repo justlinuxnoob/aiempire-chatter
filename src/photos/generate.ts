@@ -69,10 +69,13 @@ export async function startGeneration(
   const caption = String(args?.caption ?? "").trim().slice(0, 500) || "took this one just for you 😘";
 
   const recent = await env.DB.prepare(
-    "SELECT COUNT(*) AS n, SUM(status IN ('generating', 'review')) AS open FROM generations WHERE member_id = ? AND fan_id = ? AND created_at > ?",
-  ).bind(memberId, fanId, Date.now() - 86400_000).first<{ n: number; open: number }>();
+    `SELECT COUNT(*) AS n, SUM(status IN ('generating', 'review')) AS open, SUM(kind = 'teaser') AS teasers,
+       SUM(prompt = ?) AS same FROM generations WHERE member_id = ? AND fan_id = ? AND created_at > ?`,
+  ).bind(built.prompt, memberId, fanId, Date.now() - 86400_000).first<{ n: number; open: number; teasers: number; same: number }>();
   if (recent?.open) return { error: "You're already taking a photo for him. Tell him it's coming." };
   if ((recent?.n ?? 0) >= MAX_PER_FAN_PER_DAY) return { error: "No more new photos for him today. Offer something from your catalog instead." };
+  if (kind === "teaser" && (recent?.teasers ?? 0) >= 1) return { error: "You already gave him a free photo today. Anything more is paid (kind ppv)." };
+  if (recent?.same) return { error: "You already took exactly that photo. Change the pose, angle, outfit or light." };
 
   if (source === "sim") {
     // Simulator: no real GPU job. The photo goes out right after her reply, so the conversation can be tested.

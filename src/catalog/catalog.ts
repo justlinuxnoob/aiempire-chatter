@@ -67,6 +67,25 @@ export async function recordOffer(
   ).bind(memberId, fanId, messageUuid, JSON.stringify(media), priceCents, Date.now()).run();
 }
 
+/** Is there a locked photo from the last 2 hours he hasn't opened? On Fanvue, checks live first. */
+export async function hasUnopenedOffer(env: Env, memberId: string, fanId: string, live: boolean): Promise<boolean> {
+  const sale = await env.DB.prepare(
+    "SELECT id, message_uuid, price_cents FROM sales WHERE member_id = ? AND fan_id = ? AND status = 'offered' AND offered_at > ? ORDER BY offered_at DESC LIMIT 1",
+  ).bind(memberId, fanId, Date.now() - 2 * 3600_000).first<{ id: number; message_uuid: string | null; price_cents: number }>();
+  if (!sale) return false;
+  if (live && sale.message_uuid) {
+    const msg = await fv(env, memberId, "GET", `/v1/chats/${fanId}/messages/${sale.message_uuid}`).catch(() => null);
+    if (msg?.purchasedAt) {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE sales SET status = 'bought', bought_at = ?, checked_at = ? WHERE id = ?").bind(Date.now(), Date.now(), sale.id),
+        env.DB.prepare("UPDATE fans SET total_spent_cents = total_spent_cents + ? WHERE member_id = ? AND fan_id = ?").bind(sale.price_cents, memberId, fanId),
+      ]);
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Simulator only: the AI fan decided to buy the last locked photo she sent. */
 export async function simulatePurchase(env: Env, memberId: string, fanId: string): Promise<number | null> {
   const sale = await env.DB.prepare(

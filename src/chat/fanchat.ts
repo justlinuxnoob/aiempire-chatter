@@ -18,7 +18,7 @@ import {
 } from "../db";
 import { historyToChat, summaryPrompt, systemPrompt, type ChatMessage } from "../brain/prompt";
 import { LLM_SETTINGS, applyRemember, parseCompletion, replyMessages, textAsMessages, toolsFor } from "../brain/tools";
-import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, recordOffer, simulatePurchase } from "../catalog/catalog";
+import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, hasUnopenedOffer, recordOffer, simulatePurchase } from "../catalog/catalog";
 import { canGenerate, photosForFan, startGeneration } from "../photos/generate";
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
@@ -572,15 +572,17 @@ export class FanChat extends DurableObject<Env> {
     if (!ids.length || chosen.some((c) => !c)) return { error: "Use ids from list_catalog." };
     if (chosen.some((c) => c!.he_bought_it)) return { error: "He already bought one of those. Pick something else." };
     const usual = chosen.reduce((sum, c) => sum + c!.price_cents, 0);
-    const priceCents = Math.round(Number(args?.price) * 100);
     const floor = Math.max(MIN_PRICE_CENTS, Math.ceil(usual * 0.7));
-    if (!Number.isFinite(priceCents) || priceCents < floor) return { error: `Too cheap. The lowest for that is $${(floor / 100).toFixed(2)}.` };
-    if (priceCents > MAX_PRICE_CENTS) return { error: "Too expensive, max $500." };
+    let priceCents = Math.round(Number(args?.price) * 100);
+    if (!Number.isFinite(priceCents)) priceCents = usual;
+    // Below her lowest price: quietly use the lowest (the price shows on the locked photo anyway).
+    priceCents = Math.min(Math.max(priceCents, floor), MAX_PRICE_CENTS);
     const caption = String(args?.caption ?? "").trim().slice(0, 500);
     const problem = caption ? checkHerReply(caption) : "is empty";
     if (problem) return { error: `Caption not OK: it ${problem}.` };
-    const recent = (await fanSales(this.env, s.memberId, s.fanId)).find((x) => x.status === "offered" && Date.now() - x.offered_at < 2 * 3600_000);
-    if (recent) return { error: "He hasn't opened your last locked photo yet. Tease him about it instead of sending another." };
+    if (await hasUnopenedOffer(this.env, s.memberId, s.fanId, s.source === "fanvue")) {
+      return { error: "Your last locked photo is still waiting for him. Don't send another yet; keep flirting (don't accuse him of anything)." };
+    }
     return {
       ppv: { media: ids, priceCents, caption, description: chosen.map((c) => c!.description).join(" + "), demo: chosen.some((c) => !!c!.demo) },
     };

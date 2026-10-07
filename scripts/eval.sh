@@ -49,7 +49,7 @@ for fid, c in convos.items():
     tag = []
     if m["role"] == "her":
       for k, rx in FLAGS.items():
-        if re.search(rx, m["text"], re.I): tag.append(k); total[k] += 1
+        if re.search(rx, re.sub(r"\[[^\]]*\]", "", m["text"]), re.I): tag.append(k); total[k] += 1
       if m["text"] in seen: tag.append("repeated"); 
       seen.add(m["text"])
     print(("👤 " if m["role"] == "fan" else "💋 ") + m["text"] + (f"   ⚠️ {", ".join(tag)}" if tag else ""))
