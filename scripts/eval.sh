@@ -23,6 +23,12 @@ for i in $(seq 1 100); do
   [ "$done" -ge "${#TYPES[@]}" ] && sleep 20 && break
   sleep 15
 done
+db "SELECT fan_id, price_cents, status FROM sales WHERE fan_id IN (SELECT fan_id FROM fans WHERE source='sim' AND created_at >= $START)" \
+  | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)[0]["results"]
+print("== SALES:", len(rows), "offered,", sum(r["status"] == "bought" for r in rows), "bought, $%.2f" % (sum(r["price_cents"] for r in rows if r["status"] == "bought") / 100))
+'
 db "SELECT f.fan_id, f.profile, m.role, m.text FROM fans f JOIN messages m ON m.fan_id = f.fan_id
     WHERE f.source='sim' AND f.created_at >= $START ORDER BY f.fan_id, m.id" | python3 -c '
 import json, re, sys
@@ -31,6 +37,7 @@ FLAGS = {
   "out of character": r"\b(ai|a\.i\.|bot|robot|creator|programmed|language model|virtual)\b",
   "claims she sent something": r"\b(sent (you|it|them)|here (you go|it is)|check (your|ur) (inbox|dms)|just sent)\b",
   "too long": r"^.{220,}$",
+  "tip for photos": r"\btip\b.*\b(show|send|pic|photo)|\b(show|send|pic|photo)\b.*\btip\b",
 }
 convos = {}
 for r in rows: convos.setdefault(r["fan_id"], {"profile": r["profile"], "msgs": []})["msgs"].append(r)

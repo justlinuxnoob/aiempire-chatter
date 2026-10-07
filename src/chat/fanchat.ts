@@ -396,6 +396,7 @@ export class FanChat extends DurableObject<Env> {
           const items = await catalogForFan(env, s.memberId, s.fanId, s.source !== "fanvue");
           result = items.map((i) => ({
             id: i.id, description: i.description, level: i.level, usual_price_usd: i.price_cents / 100,
+            lowest_price_usd: Math.max(MIN_PRICE_CENTS, Math.ceil(i.price_cents * 0.7)) / 100,
             he_bought_it: i.he_bought_it, already_offered: i.already_offered,
           }));
         } else if (call.name === "send_ppv" && turn.canSell) {
