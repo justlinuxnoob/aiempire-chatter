@@ -56,6 +56,10 @@ describe("her replies", () => {
     "let's meet up this weekend",
     "add my snapchat",
     "facetime me later",
+    "haha my creator is a genius with names 🙃",
+    "i'm an AI so i can't do that",
+    "as an ai i love chatting",
+    "i was programmed to flirt",
   ])("blocks %s", (t) => {
     expect(checkHerReply(t)).not.toBeNull();
   });
@@ -110,7 +114,8 @@ describe("prompt", () => {
   });
   it("includes the persona, what she knows, and the situation", () => {
     const p = systemPrompt({ name: "Mia", age: "24", persona: "from Miami" }, { name: "Jake", notes: ["likes the gym"] }, { asksIfReal: true });
-    expect(p).toContain("You are Mia, a 24-year-old AI-generated creator");
+    expect(p).toContain("You are Mia, 24.");
+    expect(p).toContain("Never mention AI");
     expect(p).toContain("from Miami");
     expect(p).toContain("His name: Jake");
     expect(p).toContain("- likes the gym");

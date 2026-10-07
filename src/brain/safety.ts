@@ -47,6 +47,13 @@ const HER_DISHONEST = [
   /\b(?:video\s*call|facetime|phone\s*call|call\s+me|my\s+number|my\s+address|snapchat|instagram|whatsapp)\b/i,
 ];
 
+// Her stepping out of character: talking about being an AI, a bot, or "her creator".
+const BREAKS_CHARACTER = [
+  /\b(?:my|the|her)\s+(?:creator|creators|developer|programmer|team|operator)s?\b/i,
+  /\b(?:i'?m|i am|im|as)\s+(?:just\s+)?(?:an?\s+)?(?:ai|a\.i\.|bot|chatbot|robot|language model|virtual|digital|computer|program)\b/i,
+  /\b(?:artificial intelligence|language model|llm|chatgpt|openai|prompt|programmed|generated)\b/i,
+];
+
 export function fanSaysUnderage(text: string): boolean {
   return FAN_UNDERAGE.some((re) => re.test(text));
 }
@@ -67,6 +74,10 @@ export function asksIfReal(text: string): boolean {
 export function checkHerReply(text: string): string | null {
   const minor = minorCoded(text);
   if (minor) return `mentions something minor-coded ("${minor}")`;
+  for (const re of BREAKS_CHARACTER) {
+    const m = text.match(re);
+    if (m) return `breaks character ("${m[0]}")`;
+  }
   for (const re of HER_DISHONEST) {
     const m = text.match(re);
     if (m) return `claims to be real or promises real-world contact ("${m[0]}")`;
