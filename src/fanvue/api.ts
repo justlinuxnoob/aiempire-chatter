@@ -33,7 +33,12 @@ export async function fv(env: Env, memberId: string, method: string, path: strin
     }
     const text = await res.text();
     if (!res.ok) throw new FanvueError(res.status, text);
-    return text ? JSON.parse(text) : null;
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text; // some endpoints (e.g. the upload part URL) answer with plain text
+    }
   }
   throw new FanvueDisconnected();
 }
