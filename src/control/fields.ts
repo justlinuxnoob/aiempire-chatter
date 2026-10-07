@@ -62,7 +62,7 @@ export const FIELDS: Field[] = [
     key: "persona",
     label: "Persona",
     question:
-      "Describe her in a few lines: where she's from, what she's into, how she texts, what she won't talk about, and how she answers \"are you real?\".\n\nNotes are fine. Here's an example you can copy and change:",
+      "Describe her in a few lines: where she's from, what she's into, how she texts, and what she won't talk about.\n\nNotes are fine. Here's an example you can copy and change:",
     example: EXAMPLE_PERSONA,
     validate: text(3500),
   },

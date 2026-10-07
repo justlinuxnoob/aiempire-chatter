@@ -108,12 +108,12 @@ describe("prompt", () => {
       { role: "assistant", content: "hii" },
     ]);
   });
-  it("includes the persona, what she knows, and the honesty reminder", () => {
+  it("includes the persona, what she knows, and the situation", () => {
     const p = systemPrompt({ name: "Mia", age: "24", persona: "from Miami" }, { name: "Jake", notes: ["likes the gym"] }, { asksIfReal: true });
     expect(p).toContain("You are Mia, a 24-year-old AI-generated creator");
     expect(p).toContain("from Miami");
     expect(p).toContain("His name: Jake");
     expect(p).toContain("- likes the gym");
-    expect(p).toContain("He is asking whether you're real");
+    expect(p).toContain("He's asking if you're real");
   });
 });

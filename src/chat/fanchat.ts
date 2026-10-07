@@ -317,8 +317,10 @@ export class FanChat extends DurableObject<Env> {
 
     if (messages && problem) {
       await addAlert(env, s.memberId, s.fanId, "reply_blocked", `${problem}: ${messages.join(" / ")}`);
-      await this.out(s, `🛡️ Blocked her draft: it ${esc(problem)}.\n<i>${esc(messages.join(" / "))}</i>`);
-      if (s.sim) s.sim.flags++;
+      if (problem.includes("minor")) {
+        await this.out(s, `🛡️ Blocked her draft: it ${esc(problem)}.\n<i>${esc(messages.join(" / "))}</i>`);
+        if (s.sim) s.sim.flags++;
+      }
       if (turn.regens < 1) {
         turn.regens++;
         await this.submitTurn(s); // she sees why it wasn't sent and rewrites
