@@ -14,6 +14,7 @@ case "${1:-}" in
   connect) post fanvue-connect-link "{}" ;;
   testcode) post test-code "{}" ;;
   webhook) post fanvue-webhook "{}" ;;
+  selftest) post selftest "{}" ;;
   approve) post review "{\"id\": $2, \"approve\": true}" ;;
   fv) post fanvue-raw "$2" ;;
   simulate-turns) post simulate "$(python3 -c 'import json,sys; print(json.dumps({"type": sys.argv[1], "turns": int(sys.argv[2])}))' "$2" "$3")" ;;

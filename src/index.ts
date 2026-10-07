@@ -16,7 +16,7 @@ import { handleCallback, trySetupWebhook } from "./fanvue/connect";
 import { handleWebhook, pollUnread } from "./fanvue/inbound";
 import { catalogTick } from "./catalog/catalog";
 import { generationTick, review } from "./photos/generate";
-import { selfTestTick } from "./control/selftest";
+import { runSelfTest, selfTestTick } from "./control/selftest";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -121,6 +121,10 @@ async function admin(env: Env, request: Request, url: URL): Promise<Response> {
     } catch (e) {
       return Response.json({ ok: false, error: String((e as Error).message) });
     }
+  }
+  if (url.pathname === "/admin/selftest") {
+    await runSelfTest(env, owner); // same as /test in Telegram
+    return Response.json({ ok: true });
   }
   if (url.pathname === "/admin/review" && body.id) {
     // Same as tapping ✅ / ❌ under a photo in Telegram.
