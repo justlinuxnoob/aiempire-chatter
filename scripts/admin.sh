@@ -5,7 +5,8 @@
 #   scripts/admin.sh transcript [fan]    print the latest simulation (or a fan id's) conversation
 set -euo pipefail
 cd "$(dirname "$0")/.."
-URL="${WORKER_URL:-https://aiempire-chatter.tvpoletv.workers.dev}"
+URL="${WORKER_URL:-$(grep "^WORKER_URL=" secrets.env | cut -d= -f2-)}"
+[ -n "$URL" ] || { echo "Set WORKER_URL in secrets.env (e.g. https://aiempire-chatter.you.workers.dev)"; exit 1; }
 KEY=$(grep '^ADMIN_KEY=' secrets.env | cut -d= -f2-)
 post() { curl -sS -X POST "$URL/admin/$1" -H "Authorization: Bearer $KEY" -H "content-type: application/json" -d "$2"; echo; }
 case "${1:-}" in
