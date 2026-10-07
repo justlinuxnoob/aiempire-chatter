@@ -53,6 +53,7 @@ interface State {
   fanId: string;
   source: Source;
   chatId: string; // where output goes (the owner's Telegram chat)
+  quiet?: boolean; // test runs started by a script: nothing is posted to Telegram
   phase: Phase;
   readAt?: number;
   firstUnreadAt?: number;
@@ -82,7 +83,7 @@ export class FanChat extends DurableObject<Env> {
     });
   }
 
-  async simulate(memberId: string, chatId: string, type: string): Promise<void> {
+  async simulate(memberId: string, chatId: string, type: string, quiet = false): Promise<void> {
     await this.locked(async () => {
       const old = await this.load();
       if (old) await this.cancelJobs(old);
@@ -90,6 +91,7 @@ export class FanChat extends DurableObject<Env> {
       const fanType = FAN_TYPES[type];
       const settings = await getSettings(this.env, memberId);
       const s = this.fresh(memberId, `sim:${type}:${Date.now()}`, "sim", chatId);
+      s.quiet = quiet;
       s.sim = {
         type,
         endpoint: settings.llm_endpoint_id,
@@ -365,7 +367,7 @@ export class FanChat extends DurableObject<Env> {
     s.outbox.shift();
     s.typingShown = false;
     await addMessage(this.env, s.memberId, s.fanId, "her", next);
-    await send(this.env, s.chatId, `💋 ${esc(next)}`);
+    if (!s.quiet) await send(this.env, s.chatId, `💋 ${esc(next)}`);
     if (s.sim) s.sim.herMessages++;
     if (s.outbox.length) await this.alarmIn(between(t.gap));
     else await this.finishTurn(s);
@@ -492,8 +494,8 @@ export class FanChat extends DurableObject<Env> {
     return { memberId, fanId, source, chatId, phase: "idle", outbox: [], typingShown: false, answeredUpTo: 0, errors: 0 };
   }
 
-  private out(s: State, html: string): Promise<void> {
-    return send(this.env, s.chatId, html);
+  private async out(s: State, html: string): Promise<void> {
+    if (!s.quiet) await send(this.env, s.chatId, html);
   }
 
   private load(): Promise<State | undefined> {

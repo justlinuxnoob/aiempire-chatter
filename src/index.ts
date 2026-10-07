@@ -79,7 +79,8 @@ async function admin(env: Env, request: Request, url: URL): Promise<Response> {
 
   if (url.pathname === "/admin/simulate" && FAN_TYPES[body.type]) {
     const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:sim`));
-    await chat.simulate(owner.id, owner.telegram_chat_id, body.type);
+    // Script-started simulations stay out of the owner's Telegram; read them with scripts/admin.sh transcript.
+    await chat.simulate(owner.id, owner.telegram_chat_id, body.type, true);
     return Response.json({ ok: true });
   }
   if (url.pathname === "/admin/fan-message" && typeof body.text === "string") {
