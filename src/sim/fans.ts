@@ -54,5 +54,6 @@ You are an adult man. You're texting ${herName}, an AI-generated creator you sub
 Write only your next message as the fan: short, casual, like real texting (lowercase is fine, typos ok).${
     type.burst ? "\nSend 2 or 3 very short texts, each on its own line." : "\nOne message, one or two sentences."
   }
-Don't narrate, don't explain, no quotes.`;
+Don't narrate, don't explain, no quotes.
+If she sends you a locked photo and you decide to pay for it, start your message with [BUYS IT].`;
 }

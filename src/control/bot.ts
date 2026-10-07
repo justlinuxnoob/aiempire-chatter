@@ -8,6 +8,8 @@ import {
 import { FIELDS, fieldByKey, missingForChat, type Field } from "./fields";
 import { FAN_TYPES } from "../sim/fans";
 import { fanvueStatusLine, onFanvueButton, showFanvue } from "./fanvue-panel";
+import { answerPrice, onCatalogButton, showCatalog } from "./catalog-panel";
+import { review } from "../photos/generate";
 
 const HELP = `<b>Commands</b>
 /setup – answer a few questions to set her up
@@ -15,6 +17,7 @@ const HELP = `<b>Commands</b>
 /chat – text her as if you were a fan
 /simulate – watch her chat with an AI fan
 /fanvue – connect Fanvue, test mode / dry-run / live
+/catalog – photos she sells and their prices
 /stop – stop chatting or the simulation
 /reset – forget the test chat and start over
 /status – is everything set up and awake?`;
@@ -48,6 +51,7 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       await clearMode(env, owner.id);
       return send(env, chatId, "OK, stopped. Nothing else changed. /settings to see everything.");
     }
+    if (mode.field.startsWith("price:") && !command) return answerPrice(env, owner, mode.field.slice(6), text);
     if (!command || command === "skip" || command === "keep") return answer(env, owner, mode.mode, mode.field, text, command);
   }
 
@@ -72,6 +76,8 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       return status(env, owner);
     case "fanvue":
       return showFanvue(env, owner, origin);
+    case "catalog":
+      return showCatalog(env, owner);
     case "cancel":
       await clearMode(env, owner.id);
       return send(env, chatId, "Nothing to cancel. /help");
@@ -239,6 +245,11 @@ async function onButton(env: Env, query: any, origin: string): Promise<void> {
   const value = rest.join(":");
 
   if (kind === "fv") return onFanvueButton(env, owner, value, origin);
+  if (kind === "cat") return onCatalogButton(env, owner, value);
+  if (kind === "gen") {
+    const [decision, id] = value.split(":");
+    return send(env, owner.telegram_chat_id, await review(env, Number(id), decision === "ok"));
+  }
 
   if (kind === "edit") {
     const field = fieldByKey(value);

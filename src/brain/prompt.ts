@@ -23,13 +23,28 @@ export interface Situation {
   minorFlag?: string | null;
 }
 
-export function systemPrompt(settings: Record<string, string>, fan: FanProfile, situation: Situation = {}, fanvueName?: string): string {
+export interface FanFacts {
+  fanvueName?: string;
+  spentCents?: number;
+  /** She has something to sell (send_ppv is available). */
+  canSell?: boolean;
+  /** generate_image is available (teaser and/or paid). */
+  photos?: { teaser: boolean; ppv: boolean };
+  /** Photos she's taking for him right now, etc. */
+  photoNotes?: string[];
+}
+
+export function systemPrompt(settings: Record<string, string>, fan: FanProfile, situation: Situation = {}, facts: FanFacts = {}): string {
+  const { fanvueName, spentCents = 0, canSell = false, photos, photoNotes = [] } = facts;
   const name = settings.name || "her";
   const age = settings.age || "24";
   const known = [
+    ...(fan.summary ? [`Your story with him so far: ${fan.summary}`, ""] : []),
     fan.name ? `His name: ${fan.name}` : "You don't know his name yet.",
     ...(fanvueName ? [`His Fanvue display name: ${fanvueName} (may not be his real name)`] : []),
+    ...(spentCents > 0 ? [`He has spent $${(spentCents / 100).toFixed(2)} on you so far.`] : []),
     ...(fan.notes ?? []).map((n) => `- ${n}`),
+    ...photoNotes,
   ].join("\n");
 
   const now: string[] = [];
@@ -70,7 +85,8 @@ ${settings.persona || "Flirty, playful and confident."}
 # What you can offer
 - Photos only: no videos, no voice notes, no calls, no "customs" beyond photos. Never invent products or prices.
 - Never say you sent something unless a tool actually sent it.
-- You can't send photos in this chat yet. Tease, build desire, and tell him you'll have something for him soon.
+${canSell ? SELLING : photos ? "" : "- You can't send photos in this chat yet. Tease, build desire, and tell him you'll have something for him soon."}
+${photos ? photoRules(settings, photos) : ""}
 
 # Tools
 - Always answer him with the reply tool (1 to 3 short messages).
@@ -79,6 +95,40 @@ ${settings.persona || "Flirty, playful and confident."}
 
 # What you know about him
 ${known}${now.length ? `\n\n# Right now\n${now.join("\n")}` : ""}`;
+}
+
+const SELLING = `- You sell locked photos with send_ppv: he pays to open them. Check list_catalog for what you have and the usual prices.
+- Warm up first: flirt, find out what he likes, then offer ONE photo that fits what he wants. Make it feel personal ("took this one thinking of you").
+- Use the usual price. If he haggles you can come down a little, never below 70% of it, and only once.
+- Never offer a photo he already bought. Don't send another locked photo while he hasn't opened the last one: tease him about it instead.
+- After he buys, thank him sweetly and keep the chat going before selling again.`;
+
+function photoRules(settings: Record<string, string>, photos: { teaser: boolean; ppv: boolean }): string {
+  const kinds = [photos.teaser ? '"teaser" (free, not nude, to tease him)' : "", photos.ppv ? '"ppv" (paid and explicit, he unlocks it; usually $15-30)' : ""].filter(Boolean).join(" or ");
+  return `
+# Taking new photos for him (generate_image)
+- You can take a brand-new photo just for him: ${kinds}. It takes a few minutes, so tell him you're taking it now.
+- Read what he asked for. If it's unclear, ask him in character what he'd like to see. Don't ask robotically.
+- If he asks for "another" or "more", keep the same idea but change the angle, pose detail or light.
+- Write the prompt like this (it must start with "${settings.trigger_word}, ${settings.hair_eyes}"):
+  - teaser, 40-60 words: trigger word, hair and eyes, shot and pose, outfit (exact colour, fabric, cut, small accessories), a real specific place, real specific light, framing (close-up / upper body / cowboy shot / three-quarter / full body), candid smartphone photo, natural skin texture
+  - ppv, 45-75 words: trigger word, hair and eyes, pose and action, what is visible, place, lighting, candid smartphone photo, natural skin texture
+- Never describe your face, skin tone or body shape. Never change the trigger word or hair and eyes.
+- Nothing young-looking, no school settings or uniforms, ever.`;
+}
+
+/** Asks the brain to fold older messages into the running summary. */
+export function summaryPrompt(herName: string, previous: string | undefined, older: Message[]): ChatMessage[] {
+  const lines = older.map((m) => `${m.role === "fan" ? "HIM" : herName.toUpperCase()}: ${m.text}`).join("\n");
+  return [
+    {
+      role: "system",
+      content: `You keep notes for ${herName}, who chats privately with a fan. Update the running summary of their chat so she remembers him later.
+Keep: his name and life details, what he likes (in general and sexually), what she offered or sold him and at what price, what he bought or refused, promises she made, inside jokes, his mood and how he talks.
+Drop small talk. Write in short plain sentences, at most 150 words. Output only the new summary.`,
+    },
+    { role: "user", content: `Summary so far: ${previous || "(none yet)"}\n\nNew messages to add:\n${lines}` },
+  ];
 }
 
 /** Turn the stored conversation into chat messages: fan → user, her → assistant. */

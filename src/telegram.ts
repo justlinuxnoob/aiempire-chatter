@@ -36,6 +36,19 @@ export async function sendPlain(env: Env, chatId: string, text: string): Promise
   for (const part of split(text)) await tg(env, "sendMessage", { chat_id: chatId, text: part });
 }
 
+/** Send a photo (raw bytes) with an optional caption and buttons. */
+export async function sendPhoto(env: Env, chatId: string, bytes: Uint8Array, caption: string, buttons?: Button[][]): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append("caption", caption.slice(0, 1000));
+  form.append("photo", new Blob([bytes], { type: "image/jpeg" }), "photo.jpg");
+  if (buttons) form.append("reply_markup", JSON.stringify({ inline_keyboard: buttons }));
+  const base = env.TELEGRAM_API || "https://api.telegram.org";
+  const res = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, { method: "POST", body: form });
+  const data: any = await res.json().catch(() => ({}));
+  if (!data.ok) console.warn(`telegram sendPhoto failed: ${data.description ?? res.status}`);
+}
+
 export function typing(env: Env, chatId: string): Promise<any> {
   return tg(env, "sendChatAction", { chat_id: chatId, action: "typing" });
 }

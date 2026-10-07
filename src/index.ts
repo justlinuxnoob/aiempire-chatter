@@ -14,6 +14,8 @@ import { tg, webhookSecret } from "./telegram";
 import { FAN_TYPES } from "./sim/fans";
 import { handleCallback, trySetupWebhook } from "./fanvue/connect";
 import { handleWebhook, pollUnread } from "./fanvue/inbound";
+import { catalogTick } from "./catalog/catalog";
+import { generationTick } from "./photos/generate";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -46,7 +48,7 @@ export default {
 
   // Every minute: catch any Fanvue message the webhook missed.
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(pollUnread(env));
+    ctx.waitUntil(Promise.all([pollUnread(env), catalogTick(env), generationTick(env)]));
   },
 } satisfies ExportedHandler<Env>;
 
@@ -96,9 +98,10 @@ async function admin(env: Env, request: Request, url: URL): Promise<Response> {
   const body: any = await request.json().catch(() => ({}));
 
   if (url.pathname === "/admin/simulate" && FAN_TYPES[body.type]) {
-    const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:sim`));
-    // Script-started simulations stay out of the owner's Telegram; read them with scripts/admin.sh transcript.
-    await chat.simulate(owner.id, owner.telegram_chat_id, body.type, true);
+    // Script-started simulations run quietly (not in the owner's Telegram), each in its own
+    // conversation so several can run at once; read them with scripts/admin.sh transcript.
+    const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:sim:${body.type}:${Date.now()}`));
+    await chat.simulate(owner.id, owner.telegram_chat_id, body.type, true, Number(body.turns) || undefined);
     return Response.json({ ok: true });
   }
   if (url.pathname === "/admin/fan-message" && typeof body.text === "string") {

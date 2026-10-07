@@ -13,21 +13,28 @@ import { DurableObject } from "cloudflare:workers";
 import { checkJob, cancelJob, submitJob } from "../runpod";
 import { esc, send, typing } from "../telegram";
 import {
-  addAlert, addMessage, ensureFan, getFan, getSettings, lastFanMessageId, pauseFan, recentMessages, saveFanProfile,
+  addAlert, addMessage, ensureFan, getFan, getSettings, lastFanMessageId, messagesToSummarize, pauseFan, recentMessages, saveFanProfile,
   type FanProfile, type Source,
 } from "../db";
-import { historyToChat, systemPrompt, type ChatMessage } from "../brain/prompt";
-import { LLM_SETTINGS, TOOLS, applyRemember, parseCompletion, replyMessages, textAsMessages } from "../brain/tools";
+import { historyToChat, summaryPrompt, systemPrompt, type ChatMessage } from "../brain/prompt";
+import { LLM_SETTINGS, applyRemember, parseCompletion, replyMessages, textAsMessages, toolsFor } from "../brain/tools";
+import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, recordOffer, simulatePurchase } from "../catalog/catalog";
+import { canGenerate, photosForFan, startGeneration } from "../photos/generate";
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
 import { TIMING, between, typingTime } from "./timing";
 import { markRead, sendMessage, showTyping } from "../fanvue/api";
 import { modeOf, type FanvueMode } from "../fanvue/inbound";
 
-type Phase = "idle" | "waiting" | "thinking" | "sending" | "fan_thinking";
+type Phase = "idle" | "waiting" | "summarizing" | "thinking" | "sending" | "fan_thinking";
+
+/** Something she sends: a text, or a locked photo (pay-to-view). */
+type Outgoing = string | { ppv: { media: string[]; priceCents: number; caption: string; description: string; demo: boolean } };
 
 interface Turn {
   endpoint: string;
+  canSell: boolean;
+  canGenerate: boolean;
   upTo: number; // newest fan message this turn answers
   convo: ChatMessage[];
   jobId: string;
@@ -62,16 +69,21 @@ interface State {
   readAt?: number;
   firstUnreadAt?: number;
   turn?: Turn;
-  outbox: string[];
+  outbox: Outgoing[];
   typingShown: boolean;
   answeredUpTo: number;
   wakeNoticeSent?: boolean;
   errors: number;
   sim?: Sim;
+  summaryJob?: { endpoint: string; jobId: string; submittedAt: number; upTo: number };
 }
 
 const GIVE_UP_AFTER = 20 * 60_000;
 const SIM_TURNS = 8;
+// She sees the last HISTORY messages word for word; once SUMMARIZE_AT older ones pile up,
+// they're folded into the running summary.
+const HISTORY = 40;
+const SUMMARIZE_AT = 20;
 
 export class FanChat extends DurableObject<Env> {
   // ── called by the Worker ───────────────────────────────────────────────
@@ -91,7 +103,7 @@ export class FanChat extends DurableObject<Env> {
     });
   }
 
-  async simulate(memberId: string, chatId: string, type: string, quiet = false): Promise<void> {
+  async simulate(memberId: string, chatId: string, type: string, quiet = false, turns?: number): Promise<void> {
     await this.locked(async () => {
       const old = await this.load();
       if (old) await this.cancelJobs(old);
@@ -103,7 +115,7 @@ export class FanChat extends DurableObject<Env> {
       s.sim = {
         type,
         endpoint: settings.llm_endpoint_id,
-        fanTurnsLeft: fanType.script ? fanType.script.length : SIM_TURNS,
+        fanTurnsLeft: fanType.script ? fanType.script.length : (turns ?? SIM_TURNS),
         scriptIndex: 0,
         fanMessages: 0,
         herMessages: 0,
@@ -149,6 +161,7 @@ export class FanChat extends DurableObject<Env> {
       if (!s) return;
       try {
         if (s.phase === "waiting") await this.startTurn(s);
+        else if (s.phase === "summarizing") await this.pollSummary(s);
         else if (s.phase === "thinking") await this.pollTurn(s);
         else if (s.phase === "sending") await this.sendNext(s);
         else if (s.phase === "fan_thinking") await this.pollFan(s);
@@ -220,7 +233,7 @@ export class FanChat extends DurableObject<Env> {
 
   // ── her side ───────────────────────────────────────────────────────────
 
-  private async startTurn(s: State, restarts = 0): Promise<void> {
+  private async startTurn(s: State, restarts = 0, skipSummary = false): Promise<void> {
     const env = this.env;
     const settings = await getSettings(env, s.memberId);
     if (!settings.llm_endpoint_id) {
@@ -234,7 +247,23 @@ export class FanChat extends DurableObject<Env> {
       s.phase = "idle";
       return;
     }
-    const history = await recentMessages(env, s.memberId, s.fanId, 40);
+    if (!skipSummary && restarts === 0) {
+      const older = await messagesToSummarize(env, s.memberId, s.fanId, fan.profile.summarizedUpTo ?? 0, HISTORY);
+      if (older.length >= SUMMARIZE_AT) {
+        // Long chat: first fold the older messages into her "story so far", then reply.
+        const body = { ...LLM_SETTINGS, max_tokens: 300, temperature: 0.3, messages: summaryPrompt(settings.name || "her", fan.profile.summary, older) };
+        s.summaryJob = {
+          endpoint: settings.llm_endpoint_id,
+          jobId: await submitJob(env, settings.llm_endpoint_id, { openai_route: "/v1/chat/completions", openai_input: body }),
+          submittedAt: Date.now(),
+          upTo: older[older.length - 1].id,
+        };
+        s.phase = "summarizing";
+        await this.alarmIn(1500);
+        return;
+      }
+    }
+    const history = await recentMessages(env, s.memberId, s.fanId, HISTORY);
     const unread = history.filter((m) => m.role === "fan" && m.id > s.answeredUpTo).map((m) => m.text).join("\n");
     const situation = { asksIfReal: asksIfReal(unread), minorFlag: minorCoded(unread) };
     if (s.source === "fanvue") {
@@ -242,10 +271,26 @@ export class FanChat extends DurableObject<Env> {
       if (s.mode === "dryrun") await this.out(s, `👀 <b>Dry-run</b> · @${esc(s.handle ?? "fan")} wrote:\n<i>${esc(unread)}</i>`);
       else if (restarts === 0) await markRead(env, s.memberId, s.fanId); // she "opens" the chat
     }
+    const canSell = await hasCatalog(env, s.memberId, s.source !== "fanvue");
+    const photosOn = canGenerate(settings) && s.mode !== "dryrun";
     s.turn = {
       endpoint: settings.llm_endpoint_id,
+      canSell,
+      canGenerate: photosOn,
       upTo,
-      convo: [{ role: "system", content: systemPrompt(settings, fan.profile, situation, s.source === "fanvue" ? (fan.display_name ?? undefined) : undefined) }, ...historyToChat(history)],
+      convo: [
+        {
+          role: "system",
+          content: systemPrompt(settings, fan.profile, situation, {
+            fanvueName: s.source === "fanvue" ? (fan.display_name ?? undefined) : undefined,
+            spentCents: fan.total_spent_cents,
+            canSell,
+            photos: photosOn ? { teaser: !!settings.sfw_endpoint_id, ppv: !!settings.nsfw_endpoint_id } : undefined,
+            photoNotes: await photosForFan(env, s.memberId, s.fanId),
+          }),
+        },
+        ...historyToChat(history),
+      ],
       jobId: "",
       submittedAt: Date.now(),
       calls: 0,
@@ -255,12 +300,30 @@ export class FanChat extends DurableObject<Env> {
     await this.submitTurn(s);
   }
 
+  private async pollSummary(s: State): Promise<void> {
+    const job = s.summaryJob!;
+    const result = await checkJob(this.env, job.endpoint, job.jobId);
+    if (result.state === "waiting" || result.state === "running") {
+      await this.keepWaiting(s, job.endpoint, job.jobId, job.submittedAt, result.state === "waiting");
+      return;
+    }
+    if (result.state === "done") {
+      const text = parseCompletion(result.output).text.trim();
+      const fan = await getFan(this.env, s.memberId, s.fanId);
+      if (text && fan) {
+        await saveFanProfile(this.env, s.memberId, s.fanId, { ...fan.profile, summary: text.slice(0, 1500), summarizedUpTo: job.upTo });
+      }
+    } else console.error("summary failed", result.error); // not fatal: she replies anyway
+    s.summaryJob = undefined;
+    await this.startTurn(s, 0, true);
+  }
+
   private async submitTurn(s: State): Promise<void> {
     const turn = s.turn!;
     const body = {
       ...LLM_SETTINGS,
       messages: turn.convo,
-      tools: TOOLS,
+      tools: toolsFor(turn.canSell, turn.canGenerate),
       tool_choice: turn.forceAuto ? "auto" : "required",
     };
     turn.jobId = await submitJob(this.env, turn.endpoint, { openai_route: "/v1/chat/completions", openai_input: body });
@@ -303,6 +366,7 @@ export class FanChat extends DurableObject<Env> {
     let profile: FanProfile = fan?.profile ?? {};
     let messages: string[] | null = null;
     let problem: string | null = null;
+    const ppvs: Outgoing[] = [];
 
     if (parsed.calls.length) {
       turn.convo.push(parsed.raw);
@@ -321,7 +385,33 @@ export class FanChat extends DurableObject<Env> {
           await saveFanProfile(env, s.memberId, s.fanId, profile);
           result = { saved: true };
         } else if (call.name === "get_fan_profile") {
-          result = { ...profile, total_spent_usd: (fan?.total_spent_cents ?? 0) / 100 };
+          const sales = await fanSales(env, s.memberId, s.fanId);
+          result = {
+            ...profile,
+            total_spent_usd: (fan?.total_spent_cents ?? 0) / 100,
+            locked_photos_sent: sales.length,
+            locked_photos_bought: sales.filter((x) => x.status === "bought").length,
+          };
+        } else if (call.name === "list_catalog" && turn.canSell) {
+          const items = await catalogForFan(env, s.memberId, s.fanId, s.source !== "fanvue");
+          result = items.map((i) => ({
+            id: i.id, description: i.description, level: i.level, usual_price_usd: i.price_cents / 100,
+            he_bought_it: i.he_bought_it, already_offered: i.already_offered,
+          }));
+        } else if (call.name === "send_ppv" && turn.canSell) {
+          const ppv = await this.checkPpv(s, call.args);
+          if ("error" in ppv) result = { error: ppv.error };
+          else {
+            ppvs.push(ppv);
+            result = { status: "sending" };
+          }
+        } else if (call.name === "generate_image" && turn.canGenerate) {
+          const started = await startGeneration(env, s.memberId, s.fanId, s.source, call.args);
+          if ("error" in started) result = { error: started.error };
+          else {
+            result = { status: started.ok };
+            if (started.simMessage) ppvs.push(started.simMessage);
+          }
         } else result = { error: `unknown tool ${call.name}` };
         turn.convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
@@ -344,8 +434,8 @@ export class FanChat extends DurableObject<Env> {
       messages = [SAFE_FALLBACKS[Math.floor(Math.random() * SAFE_FALLBACKS.length)]];
     }
 
-    if (messages) {
-      s.outbox = messages;
+    if (messages || ppvs.length) {
+      s.outbox = [...(messages ?? []), ...ppvs];
       s.answeredUpTo = turn.upTo;
       s.turn = undefined;
       s.phase = "sending";
@@ -354,8 +444,8 @@ export class FanChat extends DurableObject<Env> {
       return;
     }
 
-    // Only looked things up so far (remember / profile): let her carry on.
-    if (turn.calls < 4) {
+    // Only looked things up so far (remember / profile / catalog): let her carry on.
+    if (turn.calls < 5) {
       await this.submitTurn(s);
       return;
     }
@@ -374,7 +464,7 @@ export class FanChat extends DurableObject<Env> {
       if (s.source === "test") await typing(this.env, s.chatId);
       else if (s.source === "fanvue" && s.mode !== "dryrun") await showTyping(this.env, s.memberId, s.fanId);
       s.typingShown = true;
-      await this.alarmIn(typingTime(t, next));
+      await this.alarmIn(typingTime(t, typeof next === "string" ? next : next.ppv.caption));
       return;
     }
 
@@ -404,7 +494,9 @@ export class FanChat extends DurableObject<Env> {
     }
   }
 
-  private async deliver(s: State, text: string): Promise<void> {
+  private async deliver(s: State, item: Outgoing): Promise<void> {
+    if (typeof item !== "string") return this.deliverPpv(s, item.ppv);
+    const text = item;
     if (s.source !== "fanvue") {
       await addMessage(this.env, s.memberId, s.fanId, "her", text);
       if (!s.quiet) await send(this.env, s.chatId, `💋 ${esc(text)}`);
@@ -417,6 +509,48 @@ export class FanChat extends DurableObject<Env> {
     }
     const messageUuid = await sendMessage(this.env, s.memberId, s.fanId, { text });
     await addMessage(this.env, s.memberId, s.fanId, "her", text, messageUuid);
+  }
+
+  private async deliverPpv(s: State, p: Extract<Outgoing, object>["ppv"]): Promise<void> {
+    const env = this.env;
+    const price = `$${(p.priceCents / 100).toFixed(2)}`;
+    // What she remembers having sent (the fan sees the photo locked, with the caption).
+    const remembered = `${p.caption} [locked photo, ${price}: ${p.description}]`;
+    if (s.source !== "fanvue") {
+      await addMessage(env, s.memberId, s.fanId, "her", remembered);
+      await recordOffer(env, s.memberId, s.fanId, p.media, p.priceCents, null);
+      if (!s.quiet) await send(env, s.chatId, `🔒 <b>Locked photo · ${price}</b>${p.demo ? " (demo)" : ""}\n<i>${esc(p.description)}</i>\n💋 ${esc(p.caption)}`);
+      return;
+    }
+    if (s.mode === "dryrun") {
+      await send(env, s.chatId, `👀 would send @${esc(s.handle ?? "fan")} a <b>locked photo · ${price}</b>\n<i>${esc(p.description)}</i>\n💋 ${esc(p.caption)}`);
+      return;
+    }
+    const messageUuid = await sendMessage(env, s.memberId, s.fanId, { text: p.caption, mediaUuids: p.media, price: p.priceCents });
+    await addMessage(env, s.memberId, s.fanId, "her", remembered, messageUuid);
+    await recordOffer(env, s.memberId, s.fanId, p.media, p.priceCents, messageUuid);
+  }
+
+  /** Is this send_ppv OK? Real photos from the catalog, a sane price, and no spamming. */
+  private async checkPpv(s: State, args: any): Promise<Extract<Outgoing, object> | { error: string }> {
+    const items = await catalogForFan(this.env, s.memberId, s.fanId, s.source !== "fanvue");
+    const ids: string[] = Array.isArray(args?.media_ids) ? args.media_ids.map(String) : [];
+    const chosen = ids.map((id) => items.find((i) => i.id === id));
+    if (!ids.length || chosen.some((c) => !c)) return { error: "Use ids from list_catalog." };
+    if (chosen.some((c) => c!.he_bought_it)) return { error: "He already bought one of those. Pick something else." };
+    const usual = chosen.reduce((sum, c) => sum + c!.price_cents, 0);
+    const priceCents = Math.round(Number(args?.price) * 100);
+    const floor = Math.max(MIN_PRICE_CENTS, Math.ceil(usual * 0.7));
+    if (!Number.isFinite(priceCents) || priceCents < floor) return { error: `Too cheap. The lowest for that is $${(floor / 100).toFixed(2)}.` };
+    if (priceCents > MAX_PRICE_CENTS) return { error: "Too expensive, max $500." };
+    const caption = String(args?.caption ?? "").trim().slice(0, 500);
+    const problem = caption ? checkHerReply(caption) : "is empty";
+    if (problem) return { error: `Caption not OK: it ${problem}.` };
+    const recent = (await fanSales(this.env, s.memberId, s.fanId)).find((x) => x.status === "offered" && Date.now() - x.offered_at < 2 * 3600_000);
+    if (recent) return { error: "He hasn't opened your last locked photo yet. Tease him about it instead of sending another." };
+    return {
+      ppv: { media: ids, priceCents, caption, description: chosen.map((c) => c!.description).join(" + "), demo: chosen.some((c) => !!c!.demo) },
+    };
   }
 
   // ── simulator ──────────────────────────────────────────────────────────
@@ -465,7 +599,12 @@ export class FanChat extends DurableObject<Env> {
     if (job.state === "failed") throw new Error(`fan simulator job failed: ${job.error}`);
 
     s.wakeNoticeSent = false;
-    const text = parseCompletion(job.output).text.replace(/^["']|["']$/g, "");
+    let text = parseCompletion(job.output).text.replace(/^["']|["']$/g, "");
+    if (/\[BUYS IT\]/i.test(text)) {
+      text = text.replace(/\[BUYS IT\]\s*/gi, "");
+      const paid = await simulatePurchase(this.env, s.memberId, s.fanId);
+      if (paid) text = `[he opened your locked photo and paid $${(paid / 100).toFixed(2)}] ${text}`.trim();
+    }
     const lines = FAN_TYPES[sim.type].burst
       ? text.split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 3)
       : [text.replace(/\s*\n+\s*/g, " ").trim()].filter(Boolean);
@@ -516,6 +655,7 @@ export class FanChat extends DurableObject<Env> {
   private async cancelJobs(s: State): Promise<void> {
     if (s.turn?.jobId) await cancelJob(this.env, s.turn.endpoint, s.turn.jobId);
     if (s.sim?.jobId) await cancelJob(this.env, s.sim.endpoint, s.sim.jobId);
+    if (s.summaryJob) await cancelJob(this.env, s.summaryJob.endpoint, s.summaryJob.jobId);
   }
 
   private fresh(memberId: string, fanId: string, source: Source, chatId: string): State {

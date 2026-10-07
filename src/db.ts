@@ -12,6 +12,10 @@ export interface Member {
 export interface FanProfile {
   name?: string;
   notes?: string[];
+  /** "The story so far": older messages squeezed into a short summary. */
+  summary?: string;
+  /** Last message id the summary covers. */
+  summarizedUpTo?: number;
 }
 
 export interface Fan {
@@ -145,6 +149,16 @@ export async function recentMessages(env: Env, memberId: string, fanId: string, 
     "SELECT id, role, text, created_at FROM messages WHERE member_id = ? AND fan_id = ? ORDER BY id DESC LIMIT ?",
   ).bind(memberId, fanId, limit).all<Message>();
   return results.reverse();
+}
+
+/** Messages after `afterId`, oldest first, excluding the newest `keep` (those stay word for word). */
+export async function messagesToSummarize(env: Env, memberId: string, fanId: string, afterId: number, keep: number): Promise<Message[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, role, text, created_at FROM messages WHERE member_id = ?1 AND fan_id = ?2 AND id > ?3
+       AND id < COALESCE((SELECT MIN(id) FROM (SELECT id FROM messages WHERE member_id = ?1 AND fan_id = ?2 ORDER BY id DESC LIMIT ?4)), 0)
+     ORDER BY id`,
+  ).bind(memberId, fanId, afterId, keep).all<Message>();
+  return results;
 }
 
 export async function lastFanMessageId(env: Env, memberId: string, fanId: string): Promise<number> {

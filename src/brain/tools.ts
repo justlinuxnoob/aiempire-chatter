@@ -1,5 +1,5 @@
-// The tools the chat brain can use. Step 2 is text only; list_catalog,
-// send_ppv and generate_image arrive in steps 4 and 5.
+// The tools the chat brain can use. Selling tools are only given when there's
+// something to sell; generate_image arrives in step 5.
 
 import type { FanProfile } from "../db";
 import type { ChatMessage, ToolCall } from "./prompt";
@@ -26,6 +26,38 @@ export const TOOLS = [
     [],
   ),
   tool("get_fan_profile", "What you know about him: name, notes, what he bought, how much he spent.", {}, []),
+];
+
+export const SALES_TOOLS = [
+  tool("list_catalog", "Your photos for sale: id, what's in it, level (sfw/spicy/explicit), usual price, and whether he already bought it or was offered it.", {}, []),
+  tool(
+    "send_ppv",
+    "Send him locked photos he pays to open, with a short teasing caption. Use ids from list_catalog.",
+    {
+      media_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 4 },
+      price: { type: "number", description: "Total price in USD" },
+      caption: { type: "string", description: "Short teasing text shown with the locked photo" },
+    },
+    ["media_ids", "price", "caption"],
+  ),
+];
+
+export const PHOTO_TOOL = tool(
+  "generate_image",
+  "Take a brand-new photo of yourself just for him. It takes a few minutes.",
+  {
+    kind: { type: "string", enum: ["teaser", "ppv"], description: "teaser = free, not nude. ppv = paid and explicit, he unlocks it." },
+    prompt: { type: "string", description: "The photo description, following the photo rules" },
+    caption: { type: "string", description: "Short text sent with the photo" },
+    price: { type: "number", description: "USD, only for ppv" },
+  },
+  ["kind", "prompt", "caption"],
+);
+
+export const toolsFor = (canSell: boolean, canGenerate = false) => [
+  ...TOOLS,
+  ...(canSell ? SALES_TOOLS : []),
+  ...(canGenerate ? [PHOTO_TOOL] : []),
 ];
 
 export const LLM_SETTINGS = {
