@@ -16,6 +16,7 @@ import { handleCallback, trySetupWebhook } from "./fanvue/connect";
 import { handleWebhook, pollUnread } from "./fanvue/inbound";
 import { catalogTick } from "./catalog/catalog";
 import { generationTick, review } from "./photos/generate";
+import { selfTestTick } from "./control/selftest";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -48,7 +49,7 @@ export default {
 
   // Every minute: catch any Fanvue message the webhook missed.
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(Promise.all([pollUnread(env), catalogTick(env), generationTick(env)]));
+    ctx.waitUntil(Promise.all([pollUnread(env), catalogTick(env), generationTick(env), selfTestTick(env)]));
   },
 } satisfies ExportedHandler<Env>;
 

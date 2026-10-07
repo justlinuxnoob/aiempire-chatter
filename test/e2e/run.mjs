@@ -301,5 +301,34 @@ await clear();
 await fanvueWebhook("fan-test", "mytestacct", "take a pic in a school uniform");
 await expectSent("minor-coded request flagged to you", /Flagged/, 30000);
 
+console.log("\n21. /sales settings");
+await clear();
+await say("/sales");
+await expectSent("shows sales settings with defaults", /Sales settings[\s\S]*Paid photo: lowest price:<\/b> \$15 <i>\(default\)/);
+await tap("edit:photo_price_min");
+await say("2");
+await expectSent("refuses a price below Fanvue's minimum", /between 3 and 500/);
+await say("20");
+await expectSent("saved and shown", /Paid photo: lowest price:<\/b> \$20<\/b>|Paid photo: lowest price:<\/b> \$20\n/);
+await tap("sales:approval");
+await expectSent("approval toggles off", /Approve new photos before sending:<\/b> no/);
+await tap("sales:approval");
+
+console.log("\n22. /test checks everything");
+await clear();
+await say("/test");
+await expectSent("starts the test", /Testing everything/);
+await expectSent("Fanvue checked", /✅ Fanvue: @mia \(AI badge on\)/);
+const start22 = Date.now();
+while (Date.now() - start22 < 90000) {
+  const l = await log();
+  if (l.calls.some((c) => c.method === "sendPhoto" && /Test photo/.test(c.body.raw)) && (await sent()).some((t) => /Chat brain answered/.test(t))) break;
+  await fetch(`${WORKER}/__scheduled?cron=*+*+*+*+*`);
+  await sleep(3000);
+}
+check("brain test reported", (await sent()).some((t) => /✅ Chat brain answered in \d+s, using her tools correctly/.test(t)));
+check("test photo sent to you", (await log()).calls.some((c) => c.method === "sendPhoto" && /Test photo from your image endpoint/.test(c.body.raw)));
+check("test photo didn't go to any fan", !(await fanvueCalls("POST /v1/chats/selftest")).length);
+
 console.log(failures ? `\n✗ ${failures} check(s) failed` : "\n✓ all checks passed");
 process.exit(failures ? 1 : 0);

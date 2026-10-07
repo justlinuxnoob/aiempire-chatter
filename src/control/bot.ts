@@ -5,7 +5,9 @@ import { health } from "../runpod";
 import {
   claim, clearMode, deleteFan, getMode, getOwner, getSettings, setMode, setSetting, type Member,
 } from "../db";
-import { FIELDS, fieldByKey, missingForChat, type Field } from "./fields";
+import { FIELDS, fieldByKey, isSalesField, missingForChat, type Field } from "./fields";
+import { onSalesButton, showSales } from "./sales-panel";
+import { runSelfTest } from "./selftest";
 import { FAN_TYPES } from "../sim/fans";
 import { fanvueStatusLine, onFanvueButton, showFanvue } from "./fanvue-panel";
 import { answerPrice, onCatalogButton, showCatalog } from "./catalog-panel";
@@ -17,7 +19,9 @@ const HELP = `<b>Commands</b>
 /chat – text her as if you were a fan
 /simulate – watch her chat with an AI fan
 /fanvue – connect Fanvue, test mode / dry-run / live
-/catalog – photos she sells and their prices
+/catalog – vault photos she sells and their prices
+/sales – photo prices, discounts, free teasers, reply speed
+/test – check that her brain, image endpoints and Fanvue all work
 /stop – stop chatting or the simulation
 /reset – forget the test chat and start over
 /status – is everything set up and awake?`;
@@ -78,6 +82,11 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       return showFanvue(env, owner, origin);
     case "catalog":
       return showCatalog(env, owner);
+    case "test":
+      return runSelfTest(env, owner);
+    case "sales":
+      await clearMode(env, owner.id);
+      return showSales(env, owner);
     case "cancel":
       await clearMode(env, owner.id);
       return send(env, chatId, "Nothing to cancel. /help");
@@ -98,7 +107,7 @@ async function startSetup(env: Env, owner: Member): Promise<void> {
 async function ask(env: Env, owner: Member, mode: "setup" | "edit", field: Field): Promise<void> {
   await setMode(env, owner.id, mode, field.key);
   const settings = await getSettings(env, owner.id);
-  const current = settings[field.key];
+  const current = settings[field.key] ?? (field as { default?: string }).default;
   const step = mode === "setup" ? `<b>${FIELDS.indexOf(field) + 1}/${FIELDS.length} · ${esc(field.label)}</b>\n` : `<b>${esc(field.label)}</b>\n`;
   let html = step + esc(field.question);
   if (field.key === "persona") {
@@ -131,7 +140,7 @@ async function answer(env: Env, owner: Member, mode: string, key: string, text: 
 
   if (mode === "edit") {
     await clearMode(env, owner.id);
-    return showSettings(env, owner);
+    return isSalesField(key) ? showSales(env, owner) : showSettings(env, owner);
   }
 
   const next = FIELDS[FIELDS.indexOf(field) + 1];
@@ -162,6 +171,7 @@ async function showSettings(env: Env, owner: Member): Promise<void> {
   for (let i = 0; i < FIELDS.length; i += 2) {
     buttons.push(FIELDS.slice(i, i + 2).map((f) => ({ text: `✏️ ${f.label.replace(/ \(.*\)/, "")}`, callback_data: `edit:${f.key}` })));
   }
+  buttons.push([{ text: "💰 Sales settings", callback_data: "sales:show" }, { text: "🧪 Test everything", callback_data: "selftest:run" }]);
   await send(env, owner.telegram_chat_id, `⚙️ <b>Settings</b>\n\n${lines.join("\n")}`, buttons);
 }
 
@@ -246,6 +256,8 @@ async function onButton(env: Env, query: any, origin: string): Promise<void> {
 
   if (kind === "fv") return onFanvueButton(env, owner, value, origin);
   if (kind === "cat") return onCatalogButton(env, owner, value);
+  if (kind === "sales") return onSalesButton(env, owner, value);
+  if (kind === "selftest") return runSelfTest(env, owner);
   if (kind === "gen") {
     const [decision, id] = value.split(":");
     return send(env, owner.telegram_chat_id, await review(env, Number(id), decision === "ok"));

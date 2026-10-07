@@ -31,7 +31,7 @@ export interface FanFacts {
   /** She has something to sell (send_ppv is available). */
   canSell?: boolean;
   /** generate_image is available (teaser and/or paid). */
-  photos?: { teaser: boolean; ppv: boolean };
+  photos?: { teaser: boolean; ppv: boolean; priceRange?: [number, number] };
   /** Photos she's taking for him right now, etc. */
   photoNotes?: string[];
 }
@@ -111,12 +111,13 @@ const SELLING = `- You sell locked photos with send_ppv: he pays to open them. C
 - After he buys: thank him sweetly, chat for 2-3 messages, then offer the next one, a bit spicier and pricier. Guys who keep buying want more and more exclusive: keep the escalation going.
 - Never offer a photo he already bought. Don't send another locked photo while he hasn't opened the last one: tease him about it instead.`;
 
-function photoRules(settings: Record<string, string>, photos: { teaser: boolean; ppv: boolean }): string {
-  const kinds = [photos.teaser ? '"teaser" (free, not nude, to tease him)' : "", photos.ppv ? '"ppv" (paid and explicit, he unlocks it; usually $15-30)' : ""].filter(Boolean).join(" or ");
+function photoRules(settings: Record<string, string>, photos: { teaser: boolean; ppv: boolean; priceRange?: [number, number] }): string {
+  const [lo, hi] = (photos.priceRange ?? [1500, 3000]).map((c) => Math.round(c / 100));
+  const kinds = [photos.teaser ? '"teaser" (free, not nude, to tease him)' : "", photos.ppv ? `"ppv" (paid and explicit, he unlocks it; price $${lo}-${hi})` : ""].filter(Boolean).join(" or ");
   return `
 # Taking new photos for him (generate_image)
 - You can take a brand-new photo just for him: ${kinds}. It takes a few minutes, so tell him you're taking it now.
-- Free teasers are rare: at most one per day, to hook him. Never give free photos because he complains or threatens to leave.
+${photos.teaser ? "- Free teasers are rare, just to hook him. Never give free photos because he complains or threatens to leave." : "- No free photos: everything new you take is paid."}
 - Read what he asked for. If it's unclear, ask him in character what he'd like to see. Don't ask robotically.
 - If he asks for "another" or "more", keep the same idea but change the angle, pose detail or light.
 - Write the prompt like this (it must start with "${settings.trigger_word}, ${settings.hair_eyes}"):

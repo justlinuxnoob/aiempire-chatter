@@ -20,6 +20,7 @@ import { historyToChat, summaryPrompt, systemPrompt, type ChatMessage } from "..
 import { LLM_SETTINGS, applyRemember, parseCompletion, replyMessages, textAsMessages, toolsFor } from "../brain/tools";
 import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, hasUnopenedOffer, recordOffer, simulatePurchase } from "../catalog/catalog";
 import { canGenerate, photosForFan, startGeneration } from "../photos/generate";
+import { photoPriceRange, salesNumber } from "../control/fields";
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
 import { TIMING, between, typingTime } from "./timing";
@@ -216,7 +217,7 @@ export class FanChat extends DurableObject<Env> {
       if (s.sim) s.sim.flags++;
     }
 
-    const t = TIMING[s.source];
+    const t = await this.timing(s);
     const now = Date.now();
     if (s.phase === "idle") {
       s.phase = "waiting";
@@ -278,7 +279,7 @@ export class FanChat extends DurableObject<Env> {
       else if (restarts === 0) await markRead(env, s.memberId, s.fanId); // she "opens" the chat
     }
     const canSell = await hasCatalog(env, s.memberId, s.source !== "fanvue");
-    const photosOn = canGenerate(settings) && s.mode !== "dryrun";
+    const photosOn = canGenerate(settings) && s.mode !== "dryrun" && salesNumber(settings, "photos_per_day") > 0;
     s.turn = {
       endpoint: settings.llm_endpoint_id,
       canSell,
@@ -291,7 +292,13 @@ export class FanChat extends DurableObject<Env> {
             fanvueName: s.source === "fanvue" ? (fan.display_name ?? undefined) : undefined,
             spentCents: fan.total_spent_cents,
             canSell,
-            photos: photosOn ? { teaser: !!settings.sfw_endpoint_id, ppv: !!settings.nsfw_endpoint_id } : undefined,
+            photos: photosOn
+              ? {
+                  teaser: !!settings.sfw_endpoint_id && salesNumber(settings, "teasers_per_day") > 0,
+                  ppv: !!settings.nsfw_endpoint_id,
+                  priceRange: photoPriceRange(settings),
+                }
+              : undefined,
             photoNotes: await photosForFan(env, s.memberId, s.fanId),
           }),
         },
@@ -402,9 +409,10 @@ export class FanChat extends DurableObject<Env> {
           };
         } else if (call.name === "list_catalog" && turn.canSell) {
           const items = await catalogForFan(env, s.memberId, s.fanId, s.source !== "fanvue");
+          const floorPct = salesNumber(await getSettings(env, s.memberId), "discount_floor") / 100;
           result = items.map((i) => ({
             id: i.id, description: i.description, level: i.level, usual_price_usd: i.price_cents / 100,
-            lowest_price_usd: Math.max(MIN_PRICE_CENTS, Math.ceil(i.price_cents * 0.7)) / 100,
+            lowest_price_usd: Math.max(MIN_PRICE_CENTS, Math.ceil(i.price_cents * floorPct)) / 100,
             he_bought_it: i.he_bought_it, already_offered: i.already_offered,
           }));
         } else if (call.name === "send_ppv" && turn.canSell) {
@@ -489,7 +497,7 @@ export class FanChat extends DurableObject<Env> {
   }
 
   private async sendNext(s: State): Promise<void> {
-    const t = TIMING[s.source];
+    const t = await this.timing(s);
     const next = s.outbox[0];
     if (next === undefined) return this.finishTurn(s);
 
@@ -572,7 +580,8 @@ export class FanChat extends DurableObject<Env> {
     if (!ids.length || chosen.some((c) => !c)) return { error: "Use ids from list_catalog." };
     if (chosen.some((c) => c!.he_bought_it)) return { error: "He already bought one of those. Pick something else." };
     const usual = chosen.reduce((sum, c) => sum + c!.price_cents, 0);
-    const floor = Math.max(MIN_PRICE_CENTS, Math.ceil(usual * 0.7));
+    const floorPct = salesNumber(await getSettings(this.env, s.memberId), "discount_floor") / 100;
+    const floor = Math.max(MIN_PRICE_CENTS, Math.ceil(usual * floorPct));
     let priceCents = Math.round(Number(args?.price) * 100);
     if (!Number.isFinite(priceCents)) priceCents = usual;
     // Below her lowest price: quietly use the lowest (the price shows on the locked photo anyway).
@@ -691,6 +700,13 @@ export class FanChat extends DurableObject<Env> {
     if (s.turn?.jobId) await cancelJob(this.env, s.turn.endpoint, s.turn.jobId);
     if (s.sim?.jobId) await cancelJob(this.env, s.sim.endpoint, s.sim.jobId);
     if (s.summaryJob) await cancelJob(this.env, s.summaryJob.endpoint, s.summaryJob.jobId);
+  }
+
+  /** Fanvue fans follow the owner's reply speed (/sales); tests and simulations have their own. */
+  private async timing(s: State) {
+    if (s.source !== "fanvue") return TIMING[s.source];
+    const speed = (await getSettings(this.env, s.memberId)).reply_speed;
+    return speed === "fast" ? TIMING.fanvueFast : TIMING.fanvue;
   }
 
   private fresh(memberId: string, fanId: string, source: Source, chatId: string): State {

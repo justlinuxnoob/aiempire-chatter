@@ -10,12 +10,12 @@ import { esc, send, sendPhoto, type Button } from "../telegram";
 import { fv } from "../fanvue/api";
 import { recordOffer, MAX_PRICE_CENTS, MIN_PRICE_CENTS } from "../catalog/catalog";
 import { minorCoded } from "../brain/safety";
+import { photoPriceRange, salesNumber } from "../control/fields";
 
 export type Kind = "teaser" | "ppv";
 
 // Extra words that are never allowed in an image prompt (on top of the minor-coded list).
 const IMAGE_BLOCKLIST = /\b(child|children|kid|kids|childlike|child-like|baby[\s-]?face|underdeveloped|flat[\s-]?chested|pigtails?|braces|lollipop|diaper|toddler|preteen|tween)\b/i;
-const MAX_PER_FAN_PER_DAY = 4;
 const GIVE_UP_AFTER = 30 * 60_000;
 
 export function canGenerate(settings: Record<string, string>): boolean {
@@ -63,8 +63,10 @@ export async function startGeneration(
 
   let priceCents: number | null = null;
   if (kind === "ppv") {
-    priceCents = Math.round(Number(args?.price) * 100);
-    if (!Number.isFinite(priceCents) || priceCents < MIN_PRICE_CENTS || priceCents > MAX_PRICE_CENTS) return { error: "Set a price between $3 and $500." };
+    // Kept inside the owner's range from /sales (and Fanvue's $3–$500).
+    const [lo, hi] = photoPriceRange(settings);
+    const asked = Math.round(Number(args?.price) * 100);
+    priceCents = Math.min(Math.max(Number.isFinite(asked) ? asked : lo, lo, MIN_PRICE_CENTS), hi, MAX_PRICE_CENTS);
   }
   const caption = String(args?.caption ?? "").trim().slice(0, 500) || "took this one just for you 😘";
 
@@ -73,8 +75,8 @@ export async function startGeneration(
        SUM(prompt = ?) AS same FROM generations WHERE member_id = ? AND fan_id = ? AND created_at > ?`,
   ).bind(built.prompt, memberId, fanId, Date.now() - 86400_000).first<{ n: number; open: number; teasers: number; same: number }>();
   if (recent?.open) return { error: "You're already taking a photo for him. Tell him it's coming." };
-  if ((recent?.n ?? 0) >= MAX_PER_FAN_PER_DAY) return { error: "No more new photos for him today. Offer something from your catalog instead." };
-  if (kind === "teaser" && (recent?.teasers ?? 0) >= 1) return { error: "You already gave him a free photo today. Anything more is paid (kind ppv)." };
+  if ((recent?.n ?? 0) >= salesNumber(settings, "photos_per_day")) return { error: "No more new photos for him today. Offer something from your catalog instead." };
+  if (kind === "teaser" && (recent?.teasers ?? 0) >= salesNumber(settings, "teasers_per_day")) return { error: "No more free photos for him today. Anything new is paid (kind ppv)." };
   if (recent?.same) return { error: "You already took exactly that photo. Change the pose, angle, outfit or light." };
 
   if (source === "sim") {
@@ -169,6 +171,9 @@ export async function deliver(env: Env, g: any, bytes?: Uint8Array): Promise<voi
     });
     await addMessage(env, g.member_id, g.fan_id, "her", text, res?.messageUuid);
     if (g.kind === "ppv") await recordOffer(env, g.member_id, g.fan_id, [g.media_uuid], g.price_cents, res?.messageUuid ?? null);
+  } else if (g.fan_id === "selftest") {
+    const owner = await getOwner(env);
+    if (owner && bytes) await sendPhoto(env, owner.telegram_chat_id, bytes, `✅ ${g.caption}\n\nPrompt: ${g.prompt}`);
   } else {
     const owner = await getOwner(env);
     if (owner && bytes) {
@@ -196,7 +201,8 @@ export async function review(env: Env, id: number, approve: boolean): Promise<st
 async function fail(env: Env, g: any, error: string): Promise<void> {
   await env.DB.prepare("UPDATE generations SET status = 'failed', error = ?, updated_at = ? WHERE id = ?").bind(error.slice(0, 500), Date.now(), g.id).run();
   const owner = await getOwner(env);
-  if (owner) await send(env, owner.telegram_chat_id, `⚠️ A photo for a fan failed: ${esc(error.slice(0, 300))}`);
+  const what = g.fan_id === "selftest" ? "❌ Test photo failed" : "⚠️ A photo for a fan failed";
+  if (owner) await send(env, owner.telegram_chat_id, `${what}: ${esc(error.slice(0, 300))}`);
 }
 
 /** Fanvue multipart upload (one part is plenty for a photo), then wait until it's ready. */

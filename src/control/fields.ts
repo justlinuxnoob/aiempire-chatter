@@ -116,7 +116,86 @@ export const FIELDS: Field[] = [
   },
 ];
 
-export const fieldByKey = (key: string) => FIELDS.find((f) => f.key === key);
+const number = (min: number, max: number) => async (input: string) => {
+  const n = Number(input.trim().replace(/[$%]/g, ""));
+  if (!Number.isFinite(n) || n < min || n > max) return { error: `Send a number between ${min} and ${max}.` };
+  return { value: String(Math.round(n)) };
+};
+
+/** Selling rules, changed in /sales. Not asked in /setup: the defaults work. */
+export const SALES_FIELDS: (Field & { default: string; unit?: string })[] = [
+  {
+    key: "photo_price_min",
+    label: "Paid photo: lowest price",
+    question: "Lowest price (USD) for a new paid photo she takes for a fan.",
+    example: "15",
+    default: "15",
+    unit: "$",
+    validate: number(3, 500),
+  },
+  {
+    key: "photo_price_max",
+    label: "Paid photo: highest price",
+    question: "Highest price (USD) for a new paid photo she takes for a fan.",
+    example: "30",
+    default: "30",
+    unit: "$",
+    validate: number(3, 500),
+  },
+  {
+    key: "discount_floor",
+    label: "Lowest discount",
+    question: "When a fan haggles, how low can she go, as % of the price? 70 means a $10 photo never goes below $7. 100 means no discounts.",
+    example: "70",
+    default: "70",
+    unit: "%",
+    validate: number(30, 100),
+  },
+  {
+    key: "teasers_per_day",
+    label: "Free teasers per fan per day",
+    question: "How many free (non-nude) photos she may give one fan per day, to hook him. 0 = never free.",
+    example: "1",
+    default: "1",
+    validate: number(0, 5),
+  },
+  {
+    key: "photos_per_day",
+    label: "New photos per fan per day",
+    question: "Max new photos she takes for one fan per day (free + paid). Each one costs GPU time.",
+    example: "4",
+    default: "4",
+    validate: number(0, 20),
+  },
+  {
+    key: "reply_speed",
+    label: "Reply speed",
+    question: "How fast she answers fans on Fanvue: natural (reads after 15–75 s, like a person) or fast (5–15 s).",
+    example: "natural",
+    default: "natural",
+    validate: async (input) => {
+      const v = input.trim().toLowerCase();
+      return v === "natural" || v === "fast" ? { value: v } : { error: "Send natural or fast." };
+    },
+  },
+];
+
+export const fieldByKey = (key: string) => FIELDS.find((f) => f.key === key) ?? SALES_FIELDS.find((f) => f.key === key);
+export const isSalesField = (key: string) => SALES_FIELDS.some((f) => f.key === key);
+
+/** A sales setting as a number (or its default). */
+export function salesNumber(settings: Record<string, string>, key: string): number {
+  const field = SALES_FIELDS.find((f) => f.key === key)!;
+  const n = Number(settings[key] ?? field.default);
+  return Number.isFinite(n) ? n : Number(field.default);
+}
+
+/** [lowest, highest] price in cents for new paid photos. */
+export function photoPriceRange(settings: Record<string, string>): [number, number] {
+  const a = salesNumber(settings, "photo_price_min") * 100;
+  const b = salesNumber(settings, "photo_price_max") * 100;
+  return [Math.min(a, b), Math.max(a, b)];
+}
 
 /** What's still missing before she can chat. */
 export function missingForChat(settings: Record<string, string>): Field[] {
