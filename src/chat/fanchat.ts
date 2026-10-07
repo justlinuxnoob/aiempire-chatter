@@ -443,11 +443,16 @@ export class FanChat extends DurableObject<Env> {
       problem = messages.map(checkHerReply).find(Boolean) ?? null;
     }
 
-    // Never repeat his words or her own earlier lines word for word.
+    // Never repeat his words or her own earlier lines word for word: drop those lines.
     if (messages && !problem) {
       const seen = new Set(history.slice(-30).map((m) => m.text.trim().toLowerCase()));
-      const repeat = messages.find((m) => seen.has(m.trim().toLowerCase()));
-      if (repeat) problem = `repeats an earlier message word for word ("${repeat}")`;
+      const fresh = messages.filter((m) => !seen.has(m.trim().toLowerCase()));
+      if (fresh.length < messages.length) {
+        await addAlert(env, s.memberId, s.fanId, "reply_trimmed", `dropped repeated line(s): ${messages.filter((m) => !fresh.includes(m)).join(" / ")}`);
+      }
+      if (fresh.length) messages = fresh;
+      else if (!ppvs.length && turn.regens < 1) problem = "only repeats earlier messages word for word";
+      else messages = null;
     }
     if (saleFailed && turn.regens < 2) {
       turn.regens++;
@@ -476,7 +481,8 @@ export class FanChat extends DurableObject<Env> {
     }
 
     if (messages || ppvs.length) {
-      s.outbox = [...(messages ?? []), ...ppvs];
+      const outbox = [...(messages ?? []), ...ppvs];
+      s.outbox = outbox.filter((o, i) => outbox.findIndex((x) => JSON.stringify(x) === JSON.stringify(o)) === i); // no doubles
       s.answeredUpTo = turn.upTo;
       s.turn = undefined;
       s.phase = "sending";

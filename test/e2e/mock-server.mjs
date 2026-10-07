@@ -16,6 +16,8 @@ let signingSecret = "";
 let unread = []; // [{fanUuid, handle, messages:[{uuid,text}]}]
 let sentCount = 0;
 let imageJobs = [];
+let runLog = []; // what each brain job was asked (for debugging)
+let lineNo = 0; // never reset, so her lines are always unique
 
 function llmAnswer(input) {
   const body = input.openai_input;
@@ -27,12 +29,14 @@ function llmAnswer(input) {
     return { choices: [{ message: { content: "hey gorgeous, what are you up to" } }] };
   }
   // Her brain. First call for "are you real" drafts a lie, to test the blocker.
-  let messages = ["heyy you 😘", "missed me?"];
+  // Numbered, because she refuses to repeat a line word for word.
+  lineNo++;
+  let messages = [`heyy you 😘 #${lineNo}`, `missed me? #${lineNo}`];
   if (/are you real/i.test(last) && lastTool.role !== "tool") {
     realQuestions++;
     messages = ["i'm a real girl babe 😘"];
   } else if (/are you real/i.test(last)) {
-    messages = ["you know what i am babe 😏 doesn't make this any less fun"];
+    messages = [`you know what i am babe 😏 doesn't make this any less fun #${lineNo}`];
   }
   const names = body.tools.map((t) => t.function.name);
   const fresh = lastTool.role !== "tool";
@@ -68,7 +72,7 @@ http
     };
     const url = new URL(req.url, "http://x");
 
-    if (url.pathname === "/log") return json({ calls, runs, realQuestions, signingSecret, imageJobs });
+    if (url.pathname === "/log") return json({ calls, runs, realQuestions, signingSecret, imageJobs, runLog });
     if (url.pathname.startsWith("/s3/")) {
       calls.push({ method: "s3:PUT", body: { size: raw.length } });
       res.writeHead(200, { ETag: '"etag-1"' });
@@ -126,6 +130,7 @@ http
     if (url.pathname === "/reset") {
       calls = [];
       runs = 0;
+      runLog = [];
       return json({ ok: true });
     }
 
@@ -145,6 +150,8 @@ http
         runs++;
         const id = `job${runs}`;
         jobs.set(id, { input: body.input, polls: 0 });
+        const oi = body.input?.openai_input;
+        if (oi) runLog.push({ id, lastUser: [...oi.messages].reverse().find((x) => x.role === "user")?.content, lastRole: oi.messages.at(-1).role, tools: !!oi.tools });
         if (endpoint.startsWith("img")) imageJobs.push(body.input);
         return json({ id, status: "IN_QUEUE" });
       }

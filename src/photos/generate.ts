@@ -81,6 +81,11 @@ export async function startGeneration(
 
   if (source === "sim") {
     // Simulator: no real GPU job. The photo goes out right after her reply, so the conversation can be tested.
+    // It's still recorded, so the daily limits and "no duplicate photo" apply like for real fans.
+    await env.DB.prepare(
+      `INSERT INTO generations (member_id, fan_id, source, kind, prompt, caption, price_cents, endpoint, job_id, status, created_at, updated_at)
+       VALUES (?, ?, 'sim', ?, ?, ?, ?, ?, NULL, 'sent', ?, ?)`,
+    ).bind(memberId, fanId, kind, built.prompt, caption, priceCents, endpoint, Date.now(), Date.now()).run();
     if (kind === "ppv") await recordOffer(env, memberId, fanId, ["sim-generated"], priceCents!, null);
     return { ok: "Taken; it will be sent right after your reply.", simMessage: remembered(kind, priceCents, caption, built.prompt) };
   }

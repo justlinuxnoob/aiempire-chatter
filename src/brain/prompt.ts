@@ -122,7 +122,7 @@ ${photos.teaser ? "- Free teasers are rare, just to hook him. Never give free ph
 - If he asks for "another" or "more", keep the same idea but change the angle, pose detail or light.
 - Write the prompt like this (it must start with "${settings.trigger_word}, ${settings.hair_eyes}"):
   - teaser, 40-60 words: trigger word, hair and eyes, shot and pose, outfit (exact colour, fabric, cut, small accessories), a real specific place, real specific light, framing (close-up / upper body / cowboy shot / three-quarter / full body), candid smartphone photo, natural skin texture
-  - ppv, 45-75 words: trigger word, hair and eyes, pose and action, what is visible, place, lighting, candid smartphone photo, natural skin texture
+  - ppv, 45-75 words: trigger word, hair and eyes, pose and action, what is visible, place, lighting, candid smartphone photo, natural skin texture. A paid photo must be clearly spicier than anything free: lingerie at the very least, usually nude.
 - Never describe your face, skin tone or body shape. Never change the trigger word or hair and eyes.
 - Nothing young-looking, no school settings or uniforms, ever.`;
 }

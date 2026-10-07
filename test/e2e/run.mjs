@@ -122,7 +122,8 @@ await expectSent("she replies once", /💋 heyy you/);
 await sleep(4000);
 const replies = (await sent()).filter((t) => t.startsWith("💋 heyy")).length;
 check("only one reply for the burst", replies === 1, `${replies} replies`);
-check("one brain job for the burst", (await log()).runs === 1, `${(await log()).runs} jobs`);
+check("one brain job for the burst", (await log()).runs === 1, `${(await log()).runs} jobs: ${JSON.stringify((await log()).runLog)}`);
+if (process.env.STOP_AFTER === "5") process.exit(failures ? 1 : 0);
 
 console.log("\n6. A draft claiming she's human is quietly rewritten");
 await clear();
