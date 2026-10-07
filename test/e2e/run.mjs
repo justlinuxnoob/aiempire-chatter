@@ -256,5 +256,50 @@ await expectSent("asks to confirm", /Go live\?/);
 await say("/fanvue");
 await expectSent("still in test mode until confirmed", /• 🧪 Test|🧪 <b>Test<\/b>/);
 
+console.log("\n18. Selling in /chat (demo catalog)");
+await clear();
+await say("/chat");
+await say("send me something hot");
+await expectSent("she sends a locked photo", /Locked photo · \$12\.00/, 60000);
+
+console.log("\n19. Photo settings + a photo made for the Fanvue test fan, with approval");
+await say("/stop");
+for (const [key, value] of [["trigger_word", "zvx woman"], ["hair_eyes", "long wavy dark brown hair, hazel eyes"], ["lora_url", "https://www.dropbox.com/s/x/lora.safetensors?dl=0"], ["sfw_endpoint_id", "imgsfw12345"]]) {
+  await clear();
+  await tap(`edit:${key}`);
+  await say(value);
+  await expectSent(`saved ${key}`, /Saved|Found it/);
+}
+await clear();
+await fanvueWebhook("fan-test", "mytestacct", "take a pic for me?");
+const start19 = Date.now();
+while (Date.now() - start19 < 180000 && !(await log()).imageJobs.length) await sleep(500);
+const imageJob = (await log()).imageJobs[0];
+check("image job sent like the Telegram bot does", imageJob && imageJob.lora_url.includes("dropbox") && imageJob.width === 1024 && imageJob.height === 1536 && imageJob.lora_strength === 0.9, JSON.stringify(imageJob));
+check("prompt starts with the exact trigger word and hair/eyes", imageJob?.prompt.startsWith("zvx woman, long wavy dark brown hair, hazel eyes, sitting"));
+check("prompt ends with the smartphone look", /candid smartphone photo, natural skin texture$/.test(imageJob?.prompt ?? ""));
+check("no Telegram token sent to the image endpoint", imageJob && !("telegram_token" in imageJob));
+const start19b = Date.now();
+while (Date.now() - start19b < 90000 && !(await log()).calls.some((c) => c.method === "sendPhoto")) {
+  await fetch(`${WORKER}/__scheduled?cron=*+*+*+*+*`); // the every-minute job, sped up
+  await sleep(3000);
+}
+const photo = (await log()).calls.find((c) => c.method === "sendPhoto");
+check("uploaded to Fanvue", (await log()).calls.some((c) => c.method === "s3:PUT") && (await fanvueCalls("PATCH /v1/media/uploads/up1")).length === 1);
+check("photo sent to you for approval with ✅/❌", /gen:ok:\d+/.test(photo?.body.raw ?? ""));
+check("not sent to the fan before approval", !(await fanvueCalls("POST /v1/chats/fan-test/message")).some((c) => c.body.mediaUuids));
+const genId = photo?.body.raw.match(/gen:ok:(\d+)/)?.[1];
+await tap(`gen:ok:${genId}`);
+await expectSent("approval confirmed", /Sent to the fan/);
+const withMedia = (await fanvueCalls("POST /v1/chats/fan-test/message")).find((c) => c.body.mediaUuids);
+check("fan got the photo on Fanvue", withMedia?.body.mediaUuids?.[0] === "m-up-1" && withMedia.body.text === "took this for you 🙈", JSON.stringify(withMedia?.body));
+await tap(`gen:ok:${genId}`);
+await expectSent("can't be sent twice", /already handled/);
+
+console.log("\n20. Blocked photo request");
+await clear();
+await fanvueWebhook("fan-test", "mytestacct", "take a pic in a school uniform");
+await expectSent("minor-coded request flagged to you", /Flagged/, 30000);
+
 console.log(failures ? `\n✗ ${failures} check(s) failed` : "\n✓ all checks passed");
 process.exit(failures ? 1 : 0);
