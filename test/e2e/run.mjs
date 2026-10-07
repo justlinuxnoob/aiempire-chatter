@@ -160,5 +160,101 @@ await expectSent("she answers the AI fan", /💋/, 30000);
 await say("/stop");
 await expectSent("stopped with a summary", /Simulation stopped/);
 
+// ── Fanvue ──────────────────────────────────────────────────────────────
+
+let fvMsg = 0;
+async function fanvueWebhook(fanUuid, handle, text, { uuid, badSignature } = {}) {
+  const { signingSecret } = await log();
+  const body = JSON.stringify({
+    id: `evt-${++fvMsg}`,
+    type: "creator.message.received",
+    timestamp: new Date().toISOString(),
+    data: { object: "message", uuid: uuid ?? `fvmsg-${fvMsg}`, sender: "fan", text, message_type: "SINGLE_RECIPIENT", creator: { uuid: "creator-1" }, fan: { uuid: fanUuid, handle, display_name: handle } },
+  });
+  const t = Math.floor(Date.now() / 1000);
+  const sig = crypto.createHmac("sha256", badSignature ? "nope" : signingSecret).update(`${t}.${body}`).digest("hex");
+  return fetch(`${WORKER}/fanvue/webhook`, { method: "POST", body, headers: { "content-type": "application/json", "X-Fanvue-Signature": `t=${t},v0=${sig}` } });
+}
+const fanvueCalls = async (what) => (await log()).calls.filter((c) => c.method.startsWith(`fanvue:${what}`));
+
+console.log("\n10. Connect Fanvue");
+await clear();
+await say("/stop");
+await say("/fanvue");
+await expectSent("offers a connect button", /isn't connected yet/);
+const connect = (await log()).calls.find((c) => c.body.reply_markup)?.body.reply_markup.inline_keyboard[0][0].url ?? "";
+const auth = new URL(connect);
+check("connect link asks for the right scopes with PKCE", auth.searchParams.get("code_challenge_method") === "S256" && /write:chat/.test(auth.searchParams.get("scope")));
+const back = await (await fetch(`${WORKER}/fanvue/callback?code=good&state=${auth.searchParams.get("state")}`)).text();
+check("callback page says connected", /Connected as/.test(back), back.slice(0, 200));
+await expectSent("owner told in Telegram", /Fanvue connected/);
+check("token request used Basic auth + PKCE verifier", (await fanvueCalls("token"))[0]?.body.includes("code_verifier="));
+check("API calls send the version header", (await fanvueCalls("GET /v1/users/me"))[0]?.version === "2025-06-26");
+check("webhook subscribed", (await fanvueCalls("POST /v1/webhooks/subscriptions")).length === 1);
+const reused = await (await fetch(`${WORKER}/fanvue/callback?code=good&state=${auth.searchParams.get("state")}`)).text();
+check("connect link can't be reused", /expired or was already used/.test(reused));
+
+console.log("\n11. Webhook security");
+check("forged webhook refused", (await fanvueWebhook("fan-x", "x", "hi", { badSignature: true })).status === 401);
+
+console.log("\n12. Test mode: real fans are ignored");
+await clear();
+await fanvueWebhook("fan-real", "realguy", "hey mia");
+await sleep(3000);
+check("no brain job for a real fan", (await log()).runs === 0);
+
+console.log("\n13. Add the test fan account");
+await clear();
+await tap("fv:testfan");
+const codeMsg = await expectSent("shows a code", /this exact message/);
+const testCode = codeMsg?.join("\n").match(/test-[a-z0-9]+/)?.[0];
+await fanvueWebhook("fan-test", "mytestacct", testCode);
+await expectSent("test account recognized", /@mytestacct<\/b> is now your test fan/);
+
+console.log("\n14. Test fan chats on Fanvue");
+await clear();
+await fanvueWebhook("fan-test", "mytestacct", "hey babe what u up to", { uuid: "dup-1" });
+await fanvueWebhook("fan-test", "mytestacct", "hey babe what u up to", { uuid: "dup-1" }); // Fanvue may deliver twice
+const start14 = Date.now();
+while (Date.now() - start14 < 120000 && (await fanvueCalls("POST /v1/chats/fan-test/message")).length < 2) await sleep(500);
+const sentToFan = await fanvueCalls("POST /v1/chats/fan-test/message");
+check("she replied on Fanvue", sentToFan.some((c) => /heyy you/.test(c.body.text)), JSON.stringify(sentToFan.map((c) => c.body)));
+check("chat marked read", (await fanvueCalls("PATCH /v1/chats/fan-test")).length >= 1);
+check("typing shown on Fanvue", (await fanvueCalls("POST /v1/chats/fan-test/typing")).length >= 1);
+check("duplicate delivery answered once", (await log()).runs === 1, `${(await log()).runs} jobs`);
+check("nothing posted to Telegram for a test chat", !(await sent()).some((t) => t.startsWith("💋")));
+
+console.log("\n15. Dry-run: real fans are read, replies only shown to you");
+await clear();
+await tap("fv:mode:dryrun");
+await expectSent("mode changed", /Dry-run/);
+await clear();
+await fanvueWebhook("fan-real", "realguy", "hey mia u there?");
+await expectSent("shows what the fan wrote", /@realguy wrote/, 90000);
+await expectSent("shows what she would reply", /would reply to @realguy/, 90000);
+check("nothing sent to the real fan", (await fanvueCalls("POST /v1/chats/fan-real/message")).length === 0);
+check("real fan's chat not marked read", (await fanvueCalls("PATCH /v1/chats/fan-real")).length === 0);
+
+console.log("\n16. Every-minute check catches a missed message");
+await clear();
+await tap("fv:mode:test");
+await clear();
+await fetch(`${MOCK}/mock/unread`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([
+  { fanUuid: "fan-test", handle: "mytestacct", messages: [{ uuid: "missed-1", text: "did u get my last msg?" }] },
+  { fanUuid: "fan-real", handle: "realguy", messages: [{ uuid: "real-9", text: "hello??" }] },
+]) });
+await fetch(`${WORKER}/__scheduled?cron=*+*+*+*+*`);
+const start16 = Date.now();
+while (Date.now() - start16 < 120000 && !(await fanvueCalls("POST /v1/chats/fan-test/message")).length) await sleep(500);
+check("missed message answered", (await fanvueCalls("POST /v1/chats/fan-test/message")).length >= 1);
+check("real fan still ignored in test mode", (await fanvueCalls("GET /v1/chats/fan-real/messages")).length === 0);
+
+console.log("\n17. Going live needs a confirmation");
+await clear();
+await tap("fv:mode:live");
+await expectSent("asks to confirm", /Go live\?/);
+await say("/fanvue");
+await expectSent("still in test mode until confirmed", /• 🧪 Test|🧪 <b>Test<\/b>/);
+
 console.log(failures ? `\n✗ ${failures} check(s) failed` : "\n✓ all checks passed");
 process.exit(failures ? 1 : 0);

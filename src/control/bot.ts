@@ -7,18 +7,20 @@ import {
 } from "../db";
 import { FIELDS, fieldByKey, missingForChat, type Field } from "./fields";
 import { FAN_TYPES } from "../sim/fans";
+import { fanvueStatusLine, onFanvueButton, showFanvue } from "./fanvue-panel";
 
 const HELP = `<b>Commands</b>
 /setup – answer a few questions to set her up
 /settings – see and change anything
 /chat – text her as if you were a fan
 /simulate – watch her chat with an AI fan
+/fanvue – connect Fanvue, test mode / dry-run / live
 /stop – stop chatting or the simulation
 /reset – forget the test chat and start over
 /status – is everything set up and awake?`;
 
-export async function handleUpdate(env: Env, update: any): Promise<void> {
-  if (update.callback_query) return onButton(env, update.callback_query);
+export async function handleUpdate(env: Env, update: any, origin: string): Promise<void> {
+  if (update.callback_query) return onButton(env, update.callback_query, origin);
   const msg = update.message;
   if (!msg?.chat || msg.chat.type !== "private") return;
   const userId = String(msg.from?.id ?? "");
@@ -68,6 +70,8 @@ export async function handleUpdate(env: Env, update: any): Promise<void> {
       return resetChat(env, owner);
     case "status":
       return status(env, owner);
+    case "fanvue":
+      return showFanvue(env, owner, origin);
     case "cancel":
       await clearMode(env, owner.id);
       return send(env, chatId, "Nothing to cancel. /help");
@@ -221,17 +225,20 @@ async function status(env: Env, owner: Member): Promise<void> {
   }
   const mode = await getMode(env, owner.id);
   if (mode?.mode === "fan") lines.push("👤 You're in fan mode (/stop to leave)");
-  lines.push("🧪 Dry-run: nothing is sent to real fans yet (Fanvue comes in step 3)");
+  lines.push(await fanvueStatusLine(env, owner.id));
   await send(env, owner.telegram_chat_id, lines.join("\n"));
 }
 
 // ── buttons ──────────────────────────────────────────────────────────────
 
-async function onButton(env: Env, query: any): Promise<void> {
+async function onButton(env: Env, query: any, origin: string): Promise<void> {
   await tg(env, "answerCallbackQuery", { callback_query_id: query.id });
   const owner = await getOwner(env);
   if (!owner || String(query.from?.id) !== owner.telegram_user_id) return;
-  const [kind, value] = String(query.data ?? "").split(":");
+  const [kind, ...rest] = String(query.data ?? "").split(":");
+  const value = rest.join(":");
+
+  if (kind === "fv") return onFanvueButton(env, owner, value, origin);
 
   if (kind === "edit") {
     const field = fieldByKey(value);

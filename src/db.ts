@@ -18,6 +18,8 @@ export interface Fan {
   fan_id: string;
   source: Source;
   display_name: string | null;
+  handle: string | null;
+  is_test: boolean;
   profile: FanProfile;
   total_spent_cents: number;
   paused: boolean;
@@ -98,19 +100,22 @@ export async function clearMode(env: Env, memberId: string): Promise<void> {
 
 // ── fans & messages ──────────────────────────────────────────────────────
 
-export async function ensureFan(env: Env, memberId: string, fanId: string, source: Source, displayName?: string): Promise<void> {
+export async function ensureFan(
+  env: Env, memberId: string, fanId: string, source: Source, displayName?: string, handle?: string,
+): Promise<void> {
   await env.DB.prepare(
-    `INSERT INTO fans (member_id, fan_id, source, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (member_id, fan_id) DO NOTHING`,
-  ).bind(memberId, fanId, source, displayName ?? null, now(), now()).run();
+    `INSERT INTO fans (member_id, fan_id, source, display_name, handle, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (member_id, fan_id) DO UPDATE SET
+       display_name = COALESCE(excluded.display_name, fans.display_name), handle = COALESCE(excluded.handle, fans.handle)`,
+  ).bind(memberId, fanId, source, displayName ?? null, handle ?? null, now(), now()).run();
 }
 
 export async function getFan(env: Env, memberId: string, fanId: string): Promise<Fan | null> {
   const row = await env.DB.prepare(
-    "SELECT fan_id, source, display_name, profile, total_spent_cents, paused FROM fans WHERE member_id = ? AND fan_id = ?",
+    "SELECT fan_id, source, display_name, handle, profile, total_spent_cents, paused, is_test FROM fans WHERE member_id = ? AND fan_id = ?",
   ).bind(memberId, fanId).first<any>();
   if (!row) return null;
-  return { ...row, profile: safeJson(row.profile), paused: !!row.paused };
+  return { ...row, profile: safeJson(row.profile), paused: !!row.paused, is_test: !!row.is_test };
 }
 
 export async function saveFanProfile(env: Env, memberId: string, fanId: string, profile: FanProfile): Promise<void> {
@@ -123,11 +128,15 @@ export async function pauseFan(env: Env, memberId: string, fanId: string, reason
     .bind(reason, now(), memberId, fanId).run();
 }
 
-export async function addMessage(env: Env, memberId: string, fanId: string, role: Role, text: string): Promise<number> {
+/** Returns the new id, or null if this Fanvue message (externalId) was already saved. */
+export async function addMessage(
+  env: Env, memberId: string, fanId: string, role: Role, text: string, externalId?: string,
+): Promise<number | null> {
   const row = await env.DB.prepare(
-    "INSERT INTO messages (member_id, fan_id, role, text, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
-  ).bind(memberId, fanId, role, text, now()).first<{ id: number }>();
-  return row!.id;
+    `INSERT INTO messages (member_id, fan_id, role, text, created_at, external_id) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING RETURNING id`,
+  ).bind(memberId, fanId, role, text, now(), externalId ?? null).first<{ id: number }>();
+  return row?.id ?? null;
 }
 
 /** The last `limit` messages, oldest first. */

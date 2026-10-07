@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // Every minute: safety net for Fanvue messages the webhook missed.
+  "triggers": { "crons": ["* * * * *"] },
   // Settings changed in the Cloudflare dashboard survive a redeploy.
   "keep_vars": true,
   "d1_databases": [

@@ -1,6 +1,6 @@
 // The Telegram control bot: the owner's control panel.
 
-export type Button = { text: string; callback_data: string };
+export type Button = { text: string; callback_data: string } | { text: string; url: string };
 
 const LIMIT = 4000; // Telegram allows 4096 characters per message
 

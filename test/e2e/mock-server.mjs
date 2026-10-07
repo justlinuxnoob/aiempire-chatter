@@ -1,6 +1,8 @@
 // Fake Telegram + fake RunPod for local end-to-end tests.
 //   /bot<token>/<method>     Telegram Bot API (records every call)
 //   /v2/<endpoint>/...       RunPod jobs: answers instantly with canned LLM output
+//   /fvauth/oauth2/token     Fanvue OAuth
+//   /fv/v1/...               Fanvue API (records calls; unread chats settable via POST /mock/unread)
 //   GET /log, POST /reset    for the test script
 
 import http from "node:http";
@@ -10,6 +12,9 @@ let calls = [];
 let jobs = new Map();
 let runs = 0;
 let realQuestions = 0;
+let signingSecret = "";
+let unread = []; // [{fanUuid, handle, messages:[{uuid,text}]}]
+let sentCount = 0;
 
 function llmAnswer(input) {
   const body = input.openai_input;
@@ -39,14 +44,58 @@ http
   .createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
-    const body = raw ? JSON.parse(raw) : {};
+    const body = raw && String(req.headers["content-type"]).includes("json") ? JSON.parse(raw) : {};
     const json = (data, status = 200) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(data));
     };
     const url = new URL(req.url, "http://x");
 
-    if (url.pathname === "/log") return json({ calls, runs, realQuestions });
+    if (url.pathname === "/log") return json({ calls, runs, realQuestions, signingSecret });
+    if (url.pathname === "/mock/unread") {
+      unread = body;
+      return json({ ok: true });
+    }
+
+    // ── Fanvue ──
+    if (url.pathname === "/fvauth/oauth2/token") {
+      calls.push({ method: "fanvue:token", body: raw });
+      const form = new URLSearchParams(raw);
+      if (form.get("code") === "bad") return json({ error: "invalid_grant" }, 400);
+      return json({ access_token: "at-" + Date.now(), refresh_token: "rt-" + Date.now(), expires_in: 3600, scope: "read:chat" });
+    }
+    if (url.pathname.startsWith("/fv/")) {
+      const path = url.pathname.slice(3);
+      calls.push({ method: `fanvue:${req.method} ${path}`, body, auth: req.headers.authorization, version: req.headers["x-fanvue-api-version"] });
+      if (path === "/v1/users/me") return json({ uuid: "creator-1", handle: "mia", displayName: "Mia", isCreator: true, isAiCreator: true });
+      if (path === "/v1/webhooks/subscriptions" && req.method === "POST") {
+        signingSecret = "whsec_" + "ab".repeat(32);
+        return json({ id: "sub-1", signingSecret }, 201);
+      }
+      if (path === "/v1/chats" && url.searchParams.get("filter") === "unread") {
+        return json({
+          data: unread.map((c) => ({
+            user: { uuid: c.fanUuid, handle: c.handle, displayName: c.handle },
+            unreadMessagesCount: c.messages.length,
+            lastMessage: { uuid: c.messages.at(-1).uuid, text: c.messages.at(-1).text, senderUuid: c.fanUuid, senderRole: "FAN", type: "SINGLE_RECIPIENT" },
+          })),
+          nextCursor: null,
+        });
+      }
+      const msgs = path.match(/^\/v1\/chats\/([^/]+)\/messages$/);
+      if (msgs && req.method === "GET") {
+        const chat = unread.find((c) => c.fanUuid === msgs[1]);
+        const data = (chat?.messages ?? []).map((m) => ({ uuid: m.uuid, text: m.text, sentAt: null, sender: { uuid: chat.fanUuid, handle: chat.handle }, type: "SINGLE_RECIPIENT" }));
+        return json({ data: data.reverse(), dateFilter: { sentBefore: null, receivedBefore: null } });
+      }
+      if (/^\/v1\/chats\/[^/]+\/message$/.test(path)) return json({ messageUuid: `sent-${++sentCount}` }, 201);
+      if (/^\/v1\/chats\/[^/]+\/typing$/.test(path)) return json({ success: true }, 202);
+      if (req.method === "PATCH" || req.method === "DELETE") {
+        res.writeHead(204);
+        return res.end();
+      }
+      return json({ error: "unknown fanvue path" }, 404);
+    }
     if (url.pathname === "/reset") {
       calls = [];
       runs = 0;

@@ -23,11 +23,12 @@ export interface Situation {
   minorFlag?: string | null;
 }
 
-export function systemPrompt(settings: Record<string, string>, fan: FanProfile, situation: Situation = {}): string {
+export function systemPrompt(settings: Record<string, string>, fan: FanProfile, situation: Situation = {}, fanvueName?: string): string {
   const name = settings.name || "her";
   const age = settings.age || "24";
   const known = [
     fan.name ? `His name: ${fan.name}` : "You don't know his name yet.",
+    ...(fanvueName ? [`His Fanvue display name: ${fanvueName} (may not be his real name)`] : []),
     ...(fan.notes ?? []).map((n) => `- ${n}`),
   ].join("\n");
 

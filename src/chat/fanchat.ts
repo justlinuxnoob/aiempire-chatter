@@ -21,6 +21,8 @@ import { LLM_SETTINGS, TOOLS, applyRemember, parseCompletion, replyMessages, tex
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
 import { TIMING, between, typingTime } from "./timing";
+import { markRead, sendMessage, showTyping } from "../fanvue/api";
+import { modeOf, type FanvueMode } from "../fanvue/inbound";
 
 type Phase = "idle" | "waiting" | "thinking" | "sending" | "fan_thinking";
 
@@ -54,6 +56,8 @@ interface State {
   source: Source;
   chatId: string; // where output goes (the owner's Telegram chat)
   quiet?: boolean; // test runs started by a script: nothing is posted to Telegram
+  mode?: FanvueMode; // Fanvue fans: test / dryrun / live, read at the start of each reply
+  handle?: string; // Fanvue fans: @handle
   phase: Phase;
   readAt?: number;
   firstUnreadAt?: number;
@@ -73,12 +77,16 @@ export class FanChat extends DurableObject<Env> {
   // ── called by the Worker ───────────────────────────────────────────────
 
   /** A fan message arrived (from you in /chat mode, or later from Fanvue). */
-  async receive(memberId: string, fanId: string, source: Source, chatId: string, text: string): Promise<void> {
+  async receive(
+    memberId: string, fanId: string, source: Source, chatId: string, text: string,
+    extra: { externalId?: string; handle?: string; displayName?: string } = {},
+  ): Promise<void> {
     await this.locked(async () => {
       let s = await this.load();
       if (!s || s.fanId !== fanId) s = this.fresh(memberId, fanId, source, chatId);
-      await ensureFan(this.env, memberId, fanId, source);
-      await this.fanMessage(s, text);
+      if (extra.handle) s.handle = extra.handle;
+      await ensureFan(this.env, memberId, fanId, source, extra.displayName, extra.handle);
+      await this.fanMessage(s, text, extra.externalId);
       await this.save(s);
     });
   }
@@ -163,10 +171,10 @@ export class FanChat extends DurableObject<Env> {
 
   // ── fan side ───────────────────────────────────────────────────────────
 
-  private async fanMessage(s: State, text: string): Promise<void> {
+  private async fanMessage(s: State, text: string, externalId?: string): Promise<void> {
     const env = this.env;
     const fan = await getFan(env, s.memberId, s.fanId);
-    await addMessage(env, s.memberId, s.fanId, "fan", text);
+    if ((await addMessage(env, s.memberId, s.fanId, "fan", text, externalId)) === null) return; // seen it already
 
     if (fan?.paused) {
       if (s.source === "test") await this.out(s, "⏸️ This fan is paused (safety). /reset to start over as a new fan.");
@@ -229,10 +237,15 @@ export class FanChat extends DurableObject<Env> {
     const history = await recentMessages(env, s.memberId, s.fanId, 40);
     const unread = history.filter((m) => m.role === "fan" && m.id > s.answeredUpTo).map((m) => m.text).join("\n");
     const situation = { asksIfReal: asksIfReal(unread), minorFlag: minorCoded(unread) };
+    if (s.source === "fanvue") {
+      s.mode = modeOf(settings);
+      if (s.mode === "dryrun") await this.out(s, `👀 <b>Dry-run</b> · @${esc(s.handle ?? "fan")} wrote:\n<i>${esc(unread)}</i>`);
+      else if (restarts === 0) await markRead(env, s.memberId, s.fanId); // she "opens" the chat
+    }
     s.turn = {
       endpoint: settings.llm_endpoint_id,
       upTo,
-      convo: [{ role: "system", content: systemPrompt(settings, fan.profile, situation) }, ...historyToChat(history)],
+      convo: [{ role: "system", content: systemPrompt(settings, fan.profile, situation, s.source === "fanvue" ? (fan.display_name ?? undefined) : undefined) }, ...historyToChat(history)],
       jobId: "",
       submittedAt: Date.now(),
       calls: 0,
@@ -359,6 +372,7 @@ export class FanChat extends DurableObject<Env> {
 
     if (!s.typingShown) {
       if (s.source === "test") await typing(this.env, s.chatId);
+      else if (s.source === "fanvue" && s.mode !== "dryrun") await showTyping(this.env, s.memberId, s.fanId);
       s.typingShown = true;
       await this.alarmIn(typingTime(t, next));
       return;
@@ -366,8 +380,7 @@ export class FanChat extends DurableObject<Env> {
 
     s.outbox.shift();
     s.typingShown = false;
-    await addMessage(this.env, s.memberId, s.fanId, "her", next);
-    if (!s.quiet) await send(this.env, s.chatId, `💋 ${esc(next)}`);
+    await this.deliver(s, next);
     if (s.sim) s.sim.herMessages++;
     if (s.outbox.length) await this.alarmIn(between(t.gap));
     else await this.finishTurn(s);
@@ -389,6 +402,21 @@ export class FanChat extends DurableObject<Env> {
       if (s.sim.fanTurnsLeft > 0) await this.nextFanTurn(s);
       else await this.endSim(s, "done");
     }
+  }
+
+  private async deliver(s: State, text: string): Promise<void> {
+    if (s.source !== "fanvue") {
+      await addMessage(this.env, s.memberId, s.fanId, "her", text);
+      if (!s.quiet) await send(this.env, s.chatId, `💋 ${esc(text)}`);
+      return;
+    }
+    if (s.mode === "dryrun") {
+      // Only you see it; not saved, because the fan never got it.
+      await send(this.env, s.chatId, `👀 would reply to @${esc(s.handle ?? "fan")}:\n💋 ${esc(text)}`);
+      return;
+    }
+    const messageUuid = await sendMessage(this.env, s.memberId, s.fanId, { text });
+    await addMessage(this.env, s.memberId, s.fanId, "her", text, messageUuid);
   }
 
   // ── simulator ──────────────────────────────────────────────────────────

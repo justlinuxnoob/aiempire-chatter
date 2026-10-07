@@ -23,7 +23,7 @@ export const TIMING: Record<Source, Timing> = {
   // Simulator: quick, so a whole conversation takes a few minutes.
   sim: { read: [800, 2000], burstExtend: 1000, maxWait: 4000, typingBase: 300, perChar: 5, typingMax: 1500, gap: [300, 800] },
   // Real fans (step 3 onwards).
-  fanvue: { read: [30000, 150000], burstExtend: 15000, maxWait: 240000, typingBase: 2000, perChar: 60, typingMax: 20000, gap: [1500, 5000] },
+  fanvue: { read: [15000, 75000], burstExtend: 10000, maxWait: 120000, typingBase: 2000, perChar: 50, typingMax: 15000, gap: [1500, 4000] },
 };
 
 export const between = ([min, max]: [number, number]) => min + Math.random() * (max - min);

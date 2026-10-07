@@ -2,12 +2,16 @@
 //   GET  /          – is it running?
 //   GET  /setup     – connects the Telegram control bot and links your account
 //   POST /telegram  – updates from the control bot
+//   GET  /fanvue/callback – back from "Connect Fanvue"
+//   POST /fanvue/webhook  – Fanvue pushes new fan messages here
 
 import "./env";
 import { handleUpdate } from "./control/bot";
 import { createClaimCode, getOwner } from "./db";
 import { tg, webhookSecret } from "./telegram";
 import { FAN_TYPES } from "./sim/fans";
+import { handleCallback } from "./fanvue/connect";
+import { handleWebhook, pollUnread } from "./fanvue/inbound";
 
 export { FanChat } from "./chat/fanchat";
 
@@ -21,15 +25,26 @@ export default {
       }
       const update = await request.json();
       // Answer Telegram right away; do the work in the background.
-      ctx.waitUntil(handleUpdate(env, update).catch((e) => console.error("update failed", e)));
+      ctx.waitUntil(handleUpdate(env, update, url.origin).catch((e) => console.error("update failed", e)));
       return new Response("ok");
     }
 
     if (url.pathname === "/setup") return setupPage(env, url);
 
+    if (url.pathname === "/fanvue/callback") {
+      const result = await handleCallback(env, url);
+      return page(result.title, result.body);
+    }
+    if (url.pathname === "/fanvue/webhook" && request.method === "POST") return handleWebhook(env, request, ctx);
+
     if (url.pathname.startsWith("/admin/") && request.method === "POST") return admin(env, request, url);
 
     return page("AI chatter", "<p>✅ The AI chatter is running.</p><p>First time? Open <a href=\"/setup\">/setup</a>.</p>");
+  },
+
+  // Every minute: catch any Fanvue message the webhook missed.
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(pollUnread(env));
   },
 } satisfies ExportedHandler<Env>;
 

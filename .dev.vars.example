@@ -2,3 +2,6 @@
 TELEGRAM_BOT_TOKEN=
 # Your RunPod API key (RunPod → Settings → API Keys)
 RUNPOD_API_KEY=
+# From your Fanvue app (fanvue.com/developers/apps → your app → Authentication)
+FANVUE_CLIENT_ID=
+FANVUE_CLIENT_SECRET=
