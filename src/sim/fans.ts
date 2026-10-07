@@ -31,6 +31,16 @@ export const FAN_TYPES: Record<string, FanType> = {
     persona:
       "You're a wealthy guy who spends freely on creators you like. You want to feel special and remembered, ask what she has that's exclusive, and like being her favorite.",
   },
+  gfe: {
+    label: "💕 Girlfriend experience",
+    persona:
+      "You're a lonely guy in your 30s who wants to feel like she's your girlfriend. You talk about your day, ask about hers, want sweet good-morning/good-night vibes and some affection. You'll pay if it feels personal and real, not salesy.",
+  },
+  timewaster: {
+    label: "⏳ Time-waster",
+    persona:
+      "You love chatting and flirting but you avoid paying. You change the subject when she offers something, say you're broke this week, promise to buy 'later', and keep asking her questions.",
+  },
   burst: {
     label: "📱 Multi-texter",
     persona: "You text in bursts: two or three very short messages in a row, before she can answer. Casual, flirty, impatient.",
