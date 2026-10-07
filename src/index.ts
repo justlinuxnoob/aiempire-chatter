@@ -7,10 +7,12 @@
 
 import "./env";
 import { handleUpdate } from "./control/bot";
-import { createClaimCode, getOwner } from "./db";
+import { createClaimCode, getOwner, randomId, setSetting } from "./db";
+import { connectLink } from "./fanvue/auth";
+import { fv } from "./fanvue/api";
 import { tg, webhookSecret } from "./telegram";
 import { FAN_TYPES } from "./sim/fans";
-import { handleCallback } from "./fanvue/connect";
+import { handleCallback, trySetupWebhook } from "./fanvue/connect";
 import { handleWebhook, pollUnread } from "./fanvue/inbound";
 
 export { FanChat } from "./chat/fanchat";
@@ -83,6 +85,7 @@ async function setupPage(env: Env, url: URL): Promise<Response> {
  * send a message as the owner's test fan. Output goes to the owner's Telegram.
  *   POST /admin/simulate {"type": "shy"}
  *   POST /admin/fan-message {"text": "hey"}
+ *   POST /admin/fanvue-connect-link, POST /admin/test-code
  */
 async function admin(env: Env, request: Request, url: URL): Promise<Response> {
   if (!env.ADMIN_KEY || request.headers.get("Authorization") !== `Bearer ${env.ADMIN_KEY}`) {
@@ -103,6 +106,27 @@ async function admin(env: Env, request: Request, url: URL): Promise<Response> {
     const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${owner.id}:${fanId}`));
     await chat.receive(owner.id, fanId, "test", owner.telegram_chat_id, body.text);
     return Response.json({ ok: true });
+  }
+  if (url.pathname === "/admin/fanvue-connect-link") {
+    return Response.json({ url: await connectLink(env, owner.id, url.origin) });
+  }
+  if (url.pathname === "/admin/fanvue-raw" && typeof body.path === "string") {
+    // Debugging: call the Fanvue API as her and show the raw answer.
+    try {
+      return Response.json({ ok: true, data: await fv(env, owner.id, body.method ?? "GET", body.path, body.body) });
+    } catch (e) {
+      return Response.json({ ok: false, error: String((e as Error).message) });
+    }
+  }
+  if (url.pathname === "/admin/fanvue-webhook") {
+    return Response.json({ error: await trySetupWebhook(env, owner.id, url.origin) });
+  }
+  if (url.pathname === "/admin/test-code") {
+    // Same as tapping "➕ Add my test fan account" in /fanvue.
+    const code = `test-${randomId(5)}`;
+    await setSetting(env, owner.id, "test_code", code);
+    await setSetting(env, owner.id, "test_code_expires", String(Date.now() + 15 * 60_000));
+    return Response.json({ code });
   }
   return Response.json({ error: "unknown admin action" }, { status: 400 });
 }

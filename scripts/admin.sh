@@ -10,6 +10,10 @@ KEY=$(grep '^ADMIN_KEY=' secrets.env | cut -d= -f2-)
 post() { curl -sS -X POST "$URL/admin/$1" -H "Authorization: Bearer $KEY" -H "content-type: application/json" -d "$2"; echo; }
 case "${1:-}" in
   simulate) post simulate "$(python3 -c 'import json,sys; print(json.dumps({"type": sys.argv[1]}))' "$2")" ;;
+  connect) post fanvue-connect-link "{}" ;;
+  testcode) post test-code "{}" ;;
+  webhook) post fanvue-webhook "{}" ;;
+  fv) post fanvue-raw "$2" ;;
   say) post fan-message "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$2")" ;;
   transcript)
     FAN="${2:-}"

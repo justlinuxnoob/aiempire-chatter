@@ -7,7 +7,7 @@ import { hmacHex, sameText } from "../crypto";
 import { getFan, getOwner, getSettings, setSetting } from "../db";
 import { esc, send } from "../telegram";
 import { connectedAccounts, type Account } from "./auth";
-import { recentChatMessages, unreadChats } from "./api";
+import { markRead, recentChatMessages, unreadChats } from "./api";
 import { decrypt } from "../crypto";
 
 export type FanvueMode = "test" | "dryrun" | "live";
@@ -21,7 +21,11 @@ export interface Incoming {
   text: string;
   handle?: string;
   displayName?: string;
+  sentAt?: string | null;
 }
+
+// Older messages are never answered (e.g. the backlog of unread chats when going live).
+const MAX_AGE = 24 * 3600_000;
 
 // Fanvue system/automation messages she should never answer.
 const SKIP_TYPES = /^(AUTOMATED_|BROADCAST|GHOST_PROMOTION|MARKETING_|VOICE_CALL)/;
@@ -122,13 +126,21 @@ async function pollAccount(env: Env, account: Account): Promise<void> {
         text,
         handle: chat.user.handle,
         displayName: chat.user.displayName,
+        sentAt: m.sentAt,
       });
     }
   }
 }
 
 async function alreadySeen(env: Env, memberId: string, messageUuid: string): Promise<boolean> {
-  return !!(await env.DB.prepare("SELECT 1 FROM messages WHERE member_id = ? AND external_id = ?").bind(memberId, messageUuid).first());
+  return !!(await env.DB.prepare(
+    "SELECT 1 FROM messages WHERE member_id = ?1 AND external_id = ?2 UNION SELECT 1 FROM seen_messages WHERE member_id = ?1 AND external_id = ?2",
+  ).bind(memberId, messageUuid).first());
+}
+
+async function markSeen(env: Env, memberId: string, messageUuid: string): Promise<void> {
+  await env.DB.prepare("INSERT OR IGNORE INTO seen_messages (member_id, external_id, created_at) VALUES (?, ?, ?)")
+    .bind(memberId, messageUuid, Date.now()).run();
 }
 
 // ── routing ──────────────────────────────────────────────────────────────
@@ -150,12 +162,18 @@ export async function route(env: Env, account: Account, msg: Incoming): Promise<
        ON CONFLICT (member_id, fan_id) DO UPDATE SET is_test = 1, handle = excluded.handle, display_name = excluded.display_name`,
     ).bind(memberId, msg.fanUuid, msg.displayName ?? null, msg.handle ?? null, Date.now(), Date.now()).run();
     await setSetting(env, memberId, "test_code", "");
+    await markSeen(env, memberId, msg.messageUuid); // the code itself is not a chat message to answer
+    await markRead(env, memberId, msg.fanUuid);
     await send(env, owner.telegram_chat_id, `✅ <b>@${esc(msg.handle ?? "your account")}</b> is now your test fan. Message Mia from that account on Fanvue and she'll answer.`);
     return;
   }
 
   const fan = await getFan(env, memberId, msg.fanUuid);
   if (modeOf(settings) === "test" && !fan?.is_test) return;
+  if (msg.sentAt && Date.now() - Date.parse(msg.sentAt) > MAX_AGE) {
+    await markSeen(env, memberId, msg.messageUuid);
+    return;
+  }
 
   const chat = env.FAN_CHAT.get(env.FAN_CHAT.idFromName(`${memberId}:fv:${msg.fanUuid}`));
   await chat.receive(memberId, msg.fanUuid, "fanvue", owner.telegram_chat_id, msg.text, {

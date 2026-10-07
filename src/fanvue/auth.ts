@@ -52,7 +52,7 @@ export async function connectedAccounts(env: Env): Promise<Account[]> {
 }
 
 /** The link the owner taps to connect (or reconnect) Fanvue. Valid for 30 minutes. */
-export async function connectLink(env: Env, memberId: string, origin: string): Promise<string> {
+export async function connectLink(env: Env, memberId: string, origin: string, forceLogin = false): Promise<string> {
   const state = randomToken();
   const { verifier, challenge } = await pkce();
   await env.DB.batch([
@@ -68,15 +68,25 @@ export async function connectLink(env: Env, memberId: string, origin: string): P
     state,
     code_challenge: challenge,
     code_challenge_method: "S256",
+    // Ask Fanvue to show its login page even if some account is already signed in.
+    ...(forceLogin ? { prompt: "login" } : {}),
   });
   return `${authBase(env)}/oauth2/auth?${params}`;
 }
 
 /** Fanvue sends the owner back here after they approve. Returns the member id. */
-export async function finishConnect(env: Env, url: URL): Promise<{ memberId: string } | { error: string }> {
-  const error = url.searchParams.get("error");
-  if (error) return { error: `Fanvue said: ${url.searchParams.get("error_description") || error}` };
+export async function finishConnect(
+  env: Env, url: URL,
+): Promise<{ memberId: string } | { error: string; retryLink?: string }> {
   const state = url.searchParams.get("state") ?? "";
+  const error = url.searchParams.get("error");
+  if (error) {
+    const pending = await env.DB.prepare("SELECT member_id FROM oauth_states WHERE state = ?").bind(state).first<{ member_id: string }>();
+    return {
+      error: `Fanvue said: ${url.searchParams.get("error_description") || error}`,
+      retryLink: pending ? await connectLink(env, pending.member_id, url.origin, true) : undefined,
+    };
+  }
   const code = url.searchParams.get("code") ?? "";
   const row = await env.DB.prepare("SELECT member_id, verifier, created_at FROM oauth_states WHERE state = ?")
     .bind(state).first<{ member_id: string; verifier: string; created_at: number }>();

@@ -10,7 +10,13 @@ import { getSettings } from "../db";
 
 export async function handleCallback(env: Env, url: URL): Promise<{ title: string; body: string }> {
   const result = await finishConnect(env, url);
-  if ("error" in result) return { title: "Not connected", body: `<p>❌ ${esc(result.error)}</p>` };
+  if ("error" in result) {
+    const retry = result.retryLink
+      ? `<p>Usually this means Fanvue is signed in as a different account in this browser. Log in again as <b>her</b> creator account:</p>
+         <p><a class="button" href="${esc(result.retryLink)}">Log in to Fanvue again</a></p>`
+      : "";
+    return { title: "Not connected", body: `<p>❌ ${esc(result.error)}</p>${retry}` };
+  }
 
   const webhook = await setupWebhook(env, result.memberId, url.origin);
   const account = await getAccount(env, result.memberId);
@@ -35,16 +41,21 @@ export async function handleCallback(env: Env, url: URL): Promise<{ title: strin
 
 /** Ask Fanvue to push new messages to us. Falls back to the every-minute check if it fails. */
 export async function setupWebhook(env: Env, memberId: string, origin: string): Promise<boolean> {
+  return (await trySetupWebhook(env, memberId, origin)) === null;
+}
+
+/** null on success, otherwise why it failed. */
+export async function trySetupWebhook(env: Env, memberId: string, origin: string): Promise<string | null> {
   const account = await getAccount(env, memberId);
   if (account?.webhook_id) await deleteWebhook(env, memberId, account.webhook_id);
   try {
     const sub = await subscribeWebhook(env, memberId, `${origin}/fanvue/webhook`);
     await env.DB.prepare("UPDATE fanvue_accounts SET webhook_id = ?, webhook_secret = ?, updated_at = ? WHERE member_id = ?")
       .bind(sub.id, await encrypt(env, sub.signingSecret), Date.now(), memberId).run();
-    return true;
+    return null;
   } catch (e) {
     console.error("webhook subscribe failed", e);
     await env.DB.prepare("UPDATE fanvue_accounts SET webhook_id = NULL, webhook_secret = NULL WHERE member_id = ?").bind(memberId).run();
-    return false;
+    return String((e as Error).message ?? e);
   }
 }
