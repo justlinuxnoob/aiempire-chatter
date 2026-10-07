@@ -41,3 +41,26 @@ candid smartphone photo, natural skin texture
 - Send only the finished prompt to the tool
 - Minor-coded terms (school uniform, teen, young-looking, petite girl, etc.) are
   blocked — rewrite the request or decline in character, and alert me in Discord
+
+---
+
+## Confirmed from the code (7 Oct 2026)
+
+Read from justlinuxnoob/ai-empire-telegram-bot (`cloudflare/worker.js`, `handler.py`):
+
+- The bot sends a RunPod `/run` job with
+  `{"input": {"prompt", "lora_url", "lora_strength": 0.9, "width": 1024, "height": 1536, "telegram_token", "chat_id"}}`.
+- With `telegram_token` + `chat_id` the generator posts the photo to Telegram itself.
+  **Without them it returns `{"ok": true, "seed", "image": "<base64 JPEG>"}`.** The chatter uses this
+  mode: same input minus the Telegram fields, then uploads the image to Fanvue.
+- The trigger word is not a separate field: it is simply the start of `prompt`
+  (e.g. `zvx woman, long wavy dark brown hair, hazel eyes, ...`).
+- `lora_url` accepts Dropbox (`dl=0` → `dl=1` is done by the generator), Google Drive and Hugging Face links.
+- The bot appends "candid smartphone photo, natural skin texture" if missing; the chatter's rules already include it.
+
+Still to check before step 5: krea2-nsfw-serverless (the NSFW endpoint), whether it takes the same input.
+
+## Change of plan
+
+Alerts and the ✅/❌ approval queue go to a **Telegram control-panel bot** (owner's choice, 7 Oct 2026),
+not Discord.
