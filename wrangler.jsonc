@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiempire-chatter",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  // Settings changed in the Cloudflare dashboard survive a redeploy.
+  "keep_vars": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aiempire-chatter",
+      "database_id": "20431987-109a-4226-9d3c-e5404b5982f1",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // One FanChat per conversation: it holds the reply timing and the job in flight.
+  "durable_objects": {
+    "bindings": [{ "name": "FAN_CHAT", "class_name": "FanChat" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FanChat"] }]
+}

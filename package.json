@@ -1,0 +1,17 @@
+{
+  "name": "aiempire-chatter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7",
+    "wrangler": "^4.148.0"
+  }
+}

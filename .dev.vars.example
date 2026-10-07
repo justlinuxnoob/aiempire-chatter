@@ -1,0 +1,4 @@
+# Your Telegram control bot's token, from @BotFather
+TELEGRAM_BOT_TOKEN=
+# Your RunPod API key (RunPod → Settings → API Keys)
+RUNPOD_API_KEY=
