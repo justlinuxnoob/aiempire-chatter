@@ -8,8 +8,20 @@ Runs on Cloudflare's **free plan**: a Worker, a D1 database and Durable
 Objects. Her "brain" is a RunPod Serverless LLM endpoint
 ([aiempire-chatter-llm](https://github.com/justlinuxnoob/aiempire-chatter-llm)).
 
-> Status: step 2 of 6. Chat testing only (`/chat` and `/simulate`).
-> Nothing is connected to Fanvue yet.
+> Status: steps 1–5 built and tested on a real Fanvue account in 🧪 Test mode
+> (she only answers the owner's test fan account). Going live is one button in `/fanvue`.
+
+## The pieces
+
+| Piece | Where | What it does |
+|---|---|---|
+| This Worker | Cloudflare (free plan) | Reads Fanvue chats every minute, decides when she reads/types/replies, sells, talks to you in Telegram |
+| Chat brain | RunPod endpoint from [aiempire-chatter-llm](https://github.com/justlinuxnoob/aiempire-chatter-llm) | Writes her replies, describes vault photos |
+| Image generator(s) | RunPod endpoints: [krea2-nsfw-serverless](https://github.com/justlinuxnoob/krea2-nsfw-serverless) (paid) and the SFW generator (free teasers) | Takes new photos of her on demand, with the member's LoRA |
+| Control bot | Telegram | Setup, settings, approvals, alerts, tests |
+
+The Worker calls the image endpoints directly (no Telegram token in the job, so the photo
+comes back as base64). One endpoint can serve both SFW and NSFW: just put the same ID twice.
 
 ## Setup (about 10 minutes, no coding)
 
@@ -34,7 +46,12 @@ value, then **Deploy**.
 | `TELEGRAM_BOT_TOKEN` | the token from BotFather |
 | `RUNPOD_API_KEY` | your RunPod API key (RunPod → Settings → API Keys) |
 
+| `FANVUE_CLIENT_ID` | from your Fanvue app (fanvue.com/developers/apps → Authentication) |
+| `FANVUE_CLIENT_SECRET` | same place (shown once when the app is created) |
+
 These are the only things set in Cloudflare. Everything else is set in Telegram.
+Fanvue app settings: redirect URI `https://<your-worker>.workers.dev/fanvue/callback`; scopes
+`read:self read:chat write:chat read:fan read:media write:media read:insights read:creator`.
 
 ### 4 · Connect your Telegram
 
@@ -57,7 +74,22 @@ image endpoints. Change anything later with `/settings`.
 | `/simulate` | Watch her chat with an AI fan: shy, horny, cheap, big spender, "are you real?", multi-texter, or a scripted safety check |
 | `/stop` | Stop chatting / stop a simulation |
 | `/reset` | Forget your test chat |
-| `/status` | Is setup complete? Is her brain awake? |
+| `/status` | Is setup complete? Is her brain awake? Fanvue mode? |
+| `/fanvue` | Connect Fanvue, add your test fan account, switch 🧪 Test / 👀 Dry-run / 🟢 Live |
+| `/catalog` | Vault photos she sells (AI description + price), change prices, hide photos, photo approval on/off |
+
+## How she sells
+
+- **Vault photos** (`/catalog`): new vault images are picked up every 30 minutes; the
+  chat brain describes each one and suggests a price (sfw 5–8, spicy 9–15, explicit 15–30).
+  She sends them locked (pay-to-view). Haggling: never below 70% of the price.
+- **New photos on demand**: she writes the prompt per `docs/image-prompt-rules.md` (exact
+  trigger word + hair/eyes first), free teaser (SFW endpoint, max 1 per fan per day) or paid
+  (NSFW endpoint, locked). The photo is uploaded to Fanvue and, unless turned off in
+  `/catalog`, sent to you in Telegram with ✅/❌ first.
+- No stacking: she won't send a new locked photo while the last one (last 2 hours) is
+  unopened. Purchases are checked every few minutes; you get "💰 … bought …" in Telegram.
+- Max 4 new photos per fan per day; minor-coded photo requests are blocked and you're alerted.
 
 ## Safety rules built into the code
 
