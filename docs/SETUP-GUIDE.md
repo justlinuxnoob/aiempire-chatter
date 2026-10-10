@@ -229,6 +229,8 @@ To pause her any time: `/fanvue` → **🧪 Test**.
 | Fanvue "redirect" / "scope" error | Check Part 4: the redirect must match exactly, all 8 permissions ticked |
 | Test fan code does nothing | It's valid 15 minutes; send it as a normal message from the fan account, exactly as shown |
 | She doesn't answer a real fan | Mode is 🧪 Test (only test fans) or the message is older than 24 h |
+| Deploy: "name already in use" | You already have a Worker called `aiempire-chatter`: pick another project name, and use that name in both Fanvue addresses (Part 4) |
+| Brain stuck "initializing" for 20+ minutes | In RunPod, check the endpoint's **Logs**/workers; terminate the worker so a new machine is picked, or add more 48 GB GPU types |
 
 ## What it costs
 
