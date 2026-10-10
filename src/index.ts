@@ -54,11 +54,18 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 async function setupPage(env: Env, url: URL): Promise<Response> {
+  // Shown on every setup page: the exact address the Fanvue app needs.
+  const redirect = `${url.origin}/fanvue/callback`;
+  const fanvue = env.FANVUE_CLIENT_ID && env.FANVUE_CLIENT_SECRET
+    ? `<hr><p class="small">✅ Fanvue app keys found. In your Fanvue app (Authentication → Redirects) the redirect must be exactly:<br><code>${redirect}</code></p>`
+    : `<hr><p class="small">➖ Fanvue app keys not added yet. In your Fanvue app (Authentication → Redirects) use exactly:<br><code>${redirect}</code><br>
+       then add <b>FANVUE_CLIENT_ID</b> and <b>FANVUE_CLIENT_SECRET</b> here: Cloudflare → Workers &amp; Pages → this Worker → Settings → Variables and Secrets (type Secret).</p>`;
+
   const missing = ["TELEGRAM_BOT_TOKEN", "RUNPOD_API_KEY"].filter((k) => !env[k as keyof Env]);
   if (missing.length) {
     return page("Almost there", `<p>❌ Missing in Cloudflare: <b>${missing.join(", ")}</b>.</p>
       <p>Add them in the Cloudflare dashboard: Workers &amp; Pages → this Worker → Settings → Variables and Secrets.
-      Then open this page again.</p>`);
+      Then open this page again.</p>${fanvue}`);
   }
 
   const me = await tg(env, "getMe", {});
@@ -73,14 +80,14 @@ async function setupPage(env: Env, url: URL): Promise<Response> {
   const bot = `@${me.result.username}`;
   if (await getOwner(env)) {
     return page("Connected", `<p>✅ Your control bot <b>${bot}</b> is connected and already linked to your Telegram account.</p>
-      <p>Open it in Telegram: <a href="https://t.me/${me.result.username}">t.me/${me.result.username}</a></p>`);
+      <p>Open it in Telegram: <a href="https://t.me/${me.result.username}">t.me/${me.result.username}</a></p>${fanvue}`);
   }
   const code = await createClaimCode(env);
   const link = `https://t.me/${me.result.username}?start=${code}`;
   return page("Last step", `<p>✅ Your control bot <b>${bot}</b> is connected.</p>
     <p>Last step: link it to <b>your</b> Telegram account, so it only listens to you.</p>
     <p><a class="button" href="${link}">Open ${bot} in Telegram</a></p>
-    <p class="small">Then tap <b>Start</b> in Telegram. Don't share this page's link: whoever taps it first becomes the owner.</p>`);
+    <p class="small">Then tap <b>Start</b> in Telegram. Don't share this page's link: whoever taps it first becomes the owner.</p>${fanvue}`);
 }
 
 /**
@@ -150,6 +157,8 @@ function page(title: string, body: string): Response {
 body{font:17px/1.5 system-ui,sans-serif;max-width:520px;margin:48px auto;padding:0 16px;color:#222;background:#fafafa}
 .button{display:inline-block;background:#229ED9;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600}
 .small{font-size:14px;color:#666}
+code{background:#eee;padding:2px 6px;border-radius:4px;word-break:break-all}
+hr{border:none;border-top:1px solid #ddd;margin:28px 0}
 </style></head><body><h1>${title}</h1>${body}</body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );

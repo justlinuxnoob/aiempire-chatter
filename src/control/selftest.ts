@@ -11,7 +11,7 @@ import { esc, send } from "../telegram";
 import { getAccount } from "../fanvue/auth";
 import { fv } from "../fanvue/api";
 import { modeOf } from "../fanvue/inbound";
-import { buildPrompt } from "../photos/generate";
+import { buildPrompt, imageEndpoint, imageJobInput } from "../photos/generate";
 import { LLM_SETTINGS, TOOLS, parseCompletion } from "../brain/tools";
 import { missingForChat } from "./fields";
 
@@ -66,16 +66,15 @@ export async function runSelfTest(env: Env, owner: Member): Promise<void> {
     const built = buildPrompt(settings, TEST_SCENE);
     for (const endpoint of endpoints) {
       const h = await health(env, endpoint);
-      const role = endpoint === settings.sfw_endpoint_id && endpoint === settings.nsfw_endpoint_id ? "free + paid" : endpoint === settings.sfw_endpoint_id ? "free teasers" : "paid photos";
+      const teaser = imageEndpoint(settings, "teaser") === endpoint;
+      const ppv = imageEndpoint(settings, "ppv") === endpoint;
+      const role = teaser && ppv ? "free + paid photos" : teaser ? "free teasers" : "paid photos";
       if (!h.ok) {
         lines.push(`❌ Image endpoint (${role}): ${esc(h.reason)}`);
         continue;
       }
       if ("error" in built) continue;
-      const input = endpoint === settings.sfw_endpoint_id
-        ? { prompt: built.prompt, lora_url: settings.lora_url, lora_strength: 0.9, width: 1024, height: 1536 }
-        : { prompt: built.prompt, lora_url: settings.lora_url };
-      const jobId = await submitJob(env, endpoint, input);
+      const jobId = await submitJob(env, endpoint, imageJobInput(settings, endpoint, built.prompt));
       await env.DB.prepare(
         `INSERT INTO generations (member_id, fan_id, source, kind, prompt, caption, price_cents, endpoint, job_id, status, created_at, updated_at)
          VALUES (?, 'selftest', 'test', 'teaser', ?, ?, NULL, ?, ?, 'generating', ?, ?)`,

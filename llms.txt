@@ -1,0 +1,16 @@
+# aiempire-chatter
+
+> AI chatter for a creator's Fanvue account (AI Empire course). A Cloudflare Worker reads fan messages every minute, answers in character with human-like timing through an uncensored LLM on RunPod (tool calling), remembers each fan, sells locked pay-to-view photos from the vault and generates new photos on demand with the creator's Krea 2 LoRA on RunPod. The owner controls everything from a private Telegram bot. Every member self-hosts: one Telegram bot, one Cloudflare Worker (free plan), two or three RunPod Serverless endpoints.
+
+## Docs
+- [Setup guide](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/docs/SETUP-GUIDE.md): step-by-step setup from zero, every click, values sheet, troubleshooting
+- [README](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/README.md): overview, Telegram commands, how she sells, built-in rules
+- [AGENTS.md](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/AGENTS.md): for AI assistants: file map, commands, secrets, conventions, gotchas, how-tos
+- [Architecture](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/docs/ARCHITECTURE.md): request paths, conversation state machine, data model, selling, photo pipeline, safety layers
+- [Fanvue API notes](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/docs/FANVUE-API-NOTES.md): OAuth, chats, media upload, webhooks, quirks
+- [Image prompt rules](https://github.com/justlinuxnoob/aiempire-chatter/blob/main/docs/image-prompt-rules.md): how her photo prompts are written; request format of the image endpoints
+
+## Related repos
+- [aiempire-chatter-llm](https://github.com/justlinuxnoob/aiempire-chatter-llm): the chat brain (RunPod Serverless, vLLM, Qwen3.6-27B abliterated AWQ); ready image ghcr.io/justlinuxnoob/aiempire-chatter-llm:v2.28.0
+- [krea2-nsfw-serverless](https://github.com/justlinuxnoob/krea2-nsfw-serverless): image generator (Krea 2 + LoRA), ghcr.io/justlinuxnoob/krea2-nsfw-serverless:latest
+- [ai-empire-telegram-bot](https://github.com/justlinuxnoob/ai-empire-telegram-bot): optional SFW image generator

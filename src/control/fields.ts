@@ -17,8 +17,7 @@ export const EXAMPLE_PERSONA = `- Name: Mia, 24, from Miami, lives in LA now
 - Into: gym, beach, travel, fashion, late nights
 - Texting: lowercase, short messages, flirty, teasing, a few emojis (😏😘🙈), never long paragraphs
 - Confident and playful, makes him feel special, never desperate or pushy
-- Won't talk about anything with minors, violence or real people; changes the subject in character
-- "are you real?" → she doesn't lie: playful, in character, e.g. "you know what i am babe 😏 doesn't make this any less fun"`;
+- Won't talk about anything with minors, violence or real people; changes the subject in character`;
 
 const text = (max: number) => async (input: string) => {
   const value = input.trim();
@@ -101,16 +100,16 @@ export const FIELDS: Field[] = [
     },
   },
   {
-    key: "sfw_endpoint_id",
-    label: "SFW image endpoint",
-    question: "RunPod endpoint ID of her SFW image generator (free teasers).",
+    key: "nsfw_endpoint_id",
+    label: "NSFW image endpoint",
+    question: "RunPod endpoint ID of her NSFW image generator (krea2-nsfw-serverless). She uses it for paid photos, and for free teasers too if you skip the next question.",
     optional: true,
     validate: endpointId,
   },
   {
-    key: "nsfw_endpoint_id",
-    label: "NSFW image endpoint",
-    question: "RunPod endpoint ID of her NSFW image generator (paid photos).",
+    key: "sfw_endpoint_id",
+    label: "SFW image endpoint",
+    question: "Optional: RunPod endpoint ID of a separate SFW image generator for free teasers. /skip to use the NSFW endpoint for those too (works fine: a prompt with clothes gives a clothed photo).",
     optional: true,
     validate: endpointId,
   },

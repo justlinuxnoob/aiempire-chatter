@@ -1,8 +1,7 @@
 // /catalog in the control bot: what she sells, at what price, and changing prices.
 
 import { esc, send, type Button } from "../telegram";
-import { clearMode, getSettings, setMode, setSetting, type Member } from "../db";
-import { approvalsOn } from "../photos/generate";
+import { clearMode, setMode, type Member } from "../db";
 import { syncVault } from "../catalog/catalog";
 import { getAccount } from "../fanvue/auth";
 
@@ -18,17 +17,11 @@ export async function showCatalog(env: Env, owner: Member, page = 0): Promise<vo
   const sales = await env.DB.prepare("SELECT COUNT(*) AS sent, SUM(status = 'bought') AS bought, SUM(CASE WHEN status = 'bought' THEN price_cents END) AS cents FROM sales WHERE member_id = ? AND message_uuid IS NOT NULL")
     .bind(owner.id).first<{ sent: number; bought: number; cents: number }>();
 
-  const settings = await getSettings(env, owner.id);
-  const approval = approvalsOn(settings)
-    ? "📸 New photos she takes: <b>you approve each one</b> in Telegram before it's sent"
-    : "📸 New photos she takes: <b>sent without asking you</b>";
-  const approvalButton: Button[] = [{ text: approvalsOn(settings) ? "Send new photos without asking me" : "Ask me before sending new photos", callback_data: "cat:approval" }];
-  const head = `${approval}\n\n🖼️ <b>Catalog</b>: ${total?.n ?? 0} photos${total?.pending ? ` (${total.pending} still being described)` : ""}\n` +
+  const head = `🖼️ <b>Catalog</b>: ${total?.n ?? 0} photos${total?.pending ? ` (${total.pending} still being described)` : ""}\n` +
     `💰 Locked photos sent on Fanvue: ${sales?.sent ?? 0}, bought: ${sales?.bought ?? 0} ($${((sales?.cents ?? 0) / 100).toFixed(2)})`;
   if (!results.length) {
     await send(env, owner.telegram_chat_id, `${head}\n\nNo photos yet. Upload photos to her Fanvue vault, then tap 🔄 (new ones are also picked up every 30 minutes). Until then she uses a demo catalog in /chat and /simulate.`, [
       [{ text: "🔄 Check the vault now", callback_data: "cat:sync" }],
-      approvalButton,
     ]);
     return;
   }
@@ -47,18 +40,12 @@ export async function showCatalog(env: Env, owner: Member, page = 0): Promise<vo
   nav.push({ text: "🔄 Check the vault", callback_data: "cat:sync" });
   if (results.length > PAGE) nav.push({ text: "▶️", callback_data: `cat:page:${page + 1}` });
   buttons.push(nav);
-  buttons.push(approvalButton);
   await send(env, owner.telegram_chat_id, `${head}\n\n${lines.join("\n")}\n\nTap ✏️ to change a price or hide a photo.`, buttons);
 }
 
 export async function onCatalogButton(env: Env, owner: Member, value: string): Promise<void> {
   const [action, arg] = value.split(":");
   if (action === "page") return showCatalog(env, owner, Number(arg) || 0);
-  if (action === "approval") {
-    const settings = await getSettings(env, owner.id);
-    await setSetting(env, owner.id, "photo_approval", approvalsOn(settings) ? "off" : "on");
-    return showCatalog(env, owner);
-  }
   if (action === "sync") {
     if (!(await getAccount(env, owner.id))) return send(env, owner.telegram_chat_id, "Connect Fanvue first: /fanvue");
     const added = await syncVault(env, owner.id);

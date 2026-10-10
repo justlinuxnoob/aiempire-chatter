@@ -49,7 +49,7 @@ function llmAnswer(input) {
     return { choices: [{ message: { content: "", tool_calls: [
       { id: `g${runs}`, type: "function", function: { name: "generate_image", arguments: JSON.stringify({
         kind: "teaser", caption: "took this for you 🙈",
-        prompt: "sitting on a rooftop bar stool, legs crossed, emerald satin slip dress with thin straps, small gold hoops, downtown LA at golden hour, warm low sun, three-quarter shot",
+        prompt: `sitting on a rooftop bar stool, legs crossed, emerald satin slip dress with thin straps, small gold hoops, downtown LA at golden hour, warm low sun, three-quarter shot from angle ${lineNo}`,
       }) } },
       { id: `r${runs}`, type: "function", function: { name: "reply", arguments: JSON.stringify({ messages: ["give me a few min 😏"] }) } },
     ] } }] };
@@ -131,6 +131,7 @@ http
       calls = [];
       runs = 0;
       runLog = [];
+      imageJobs = [];
       return json({ ok: true });
     }
 

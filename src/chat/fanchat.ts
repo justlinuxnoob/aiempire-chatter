@@ -19,7 +19,7 @@ import {
 import { historyToChat, summaryPrompt, systemPrompt, type ChatMessage } from "../brain/prompt";
 import { LLM_SETTINGS, applyRemember, parseCompletion, replyMessages, textAsMessages, toolsFor } from "../brain/tools";
 import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, hasUnopenedOffer, recordOffer, simulatePurchase } from "../catalog/catalog";
-import { canGenerate, photosForFan, startGeneration } from "../photos/generate";
+import { canGenerate, imageEndpoint, photosForFan, startGeneration } from "../photos/generate";
 import { photoPriceRange, salesNumber } from "../control/fields";
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
@@ -294,8 +294,8 @@ export class FanChat extends DurableObject<Env> {
             canSell,
             photos: photosOn
               ? {
-                  teaser: !!settings.sfw_endpoint_id && salesNumber(settings, "teasers_per_day") > 0,
-                  ppv: !!settings.nsfw_endpoint_id,
+                  teaser: !!imageEndpoint(settings, "teaser") && salesNumber(settings, "teasers_per_day") > 0,
+                  ppv: !!imageEndpoint(settings, "ppv"),
                   priceRange: photoPriceRange(settings),
                 }
               : undefined,

@@ -12,6 +12,14 @@ const MODES: Record<FanvueMode, { button: string; text: string }> = {
 };
 
 export async function showFanvue(env: Env, owner: Member, origin: string): Promise<void> {
+  if (!env.FANVUE_CLIENT_ID || !env.FANVUE_CLIENT_SECRET) {
+    await send(
+      env,
+      owner.telegram_chat_id,
+      `🔗 <b>Fanvue app keys missing.</b>\nAdd <b>FANVUE_CLIENT_ID</b> and <b>FANVUE_CLIENT_SECRET</b> in Cloudflare (Workers &amp; Pages → your Worker → Settings → Variables and Secrets, type Secret).\nYour Fanvue app's redirect must be exactly:\n<code>${esc(origin)}/fanvue/callback</code>`,
+    );
+    return;
+  }
   const account = await getAccount(env, owner.id);
   const link = await connectLink(env, owner.id, origin);
   if (!account || account.status !== "connected") {

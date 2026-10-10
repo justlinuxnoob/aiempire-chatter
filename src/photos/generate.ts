@@ -22,8 +22,23 @@ export function canGenerate(settings: Record<string, string>): boolean {
   return !!(settings.trigger_word && settings.hair_eyes && settings.lora_url && (settings.sfw_endpoint_id || settings.nsfw_endpoint_id));
 }
 
+/** Off by default: photos go to the fan automatically. Owners can switch approval on in /sales. */
 export function approvalsOn(settings: Record<string, string>): boolean {
-  return settings.photo_approval !== "off";
+  return settings.photo_approval === "on";
+}
+
+/** Which RunPod endpoint takes this kind of photo. Free teasers fall back to the NSFW endpoint
+ *  when no SFW one is set (a prompt with clothes gives a clothed photo). */
+export function imageEndpoint(settings: Record<string, string>, kind: Kind): string | undefined {
+  return kind === "ppv" ? settings.nsfw_endpoint_id || undefined : settings.sfw_endpoint_id || settings.nsfw_endpoint_id || undefined;
+}
+
+/** Job input in exactly the format the owner's image generators expect. The SFW generator
+ *  (ai-empire-telegram-bot) takes size/strength; the NSFW one (krea2-nsfw-serverless) ignores them. */
+export function imageJobInput(settings: Record<string, string>, endpoint: string, prompt: string) {
+  return endpoint === settings.sfw_endpoint_id
+    ? { prompt, lora_url: settings.lora_url, lora_strength: 0.9, width: 1024, height: 1536 }
+    : { prompt, lora_url: settings.lora_url };
 }
 
 /** Cleans her prompt: trigger word + hair/eyes first, smartphone look last. Returns an error if it's not allowed. */
@@ -48,7 +63,7 @@ export async function startGeneration(
 ): Promise<{ ok: string; simMessage?: string } | { error: string }> {
   const settings = await getSettings(env, memberId);
   const kind: Kind = args?.kind === "ppv" ? "ppv" : "teaser";
-  const endpoint = kind === "ppv" ? settings.nsfw_endpoint_id : settings.sfw_endpoint_id;
+  const endpoint = imageEndpoint(settings, kind);
   if (!endpoint) return { error: kind === "ppv" ? "You can't take paid photos right now, only teasers." : "You can't take free teasers right now, only paid photos." };
 
   const built = buildPrompt(settings, args?.prompt);
@@ -90,10 +105,7 @@ export async function startGeneration(
     return { ok: "Taken; it will be sent right after your reply.", simMessage: remembered(kind, priceCents, caption, built.prompt) };
   }
 
-  const input = kind === "ppv"
-    ? { prompt: built.prompt, lora_url: settings.lora_url }
-    : { prompt: built.prompt, lora_url: settings.lora_url, lora_strength: 0.9, width: 1024, height: 1536 };
-  const jobId = await submitJob(env, endpoint, input);
+  const jobId = await submitJob(env, endpoint, imageJobInput(settings, endpoint, built.prompt));
   await env.DB.prepare(
     `INSERT INTO generations (member_id, fan_id, source, kind, prompt, caption, price_cents, endpoint, job_id, status, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?, ?)`,
