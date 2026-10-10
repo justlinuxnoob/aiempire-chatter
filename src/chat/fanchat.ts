@@ -19,13 +19,13 @@ import {
 import { historyToChat, summaryPrompt, systemPrompt, type ChatMessage } from "../brain/prompt";
 import { LLM_SETTINGS, applyRemember, parseCompletion, replyMessages, textAsMessages, toolsFor } from "../brain/tools";
 import { MAX_PRICE_CENTS, MIN_PRICE_CENTS, catalogForFan, fanSales, hasCatalog, hasUnopenedOffer, recordOffer, simulatePurchase } from "../catalog/catalog";
-import { canGenerate, imageEndpoint, photosForFan, startGeneration } from "../photos/generate";
+import { canGenerate, cancelFanPhotos, imageEndpoint, photosForFan, startGeneration } from "../photos/generate";
 import { photoPriceRange, salesNumber } from "../control/fields";
 import { SAFE_FALLBACKS, asksIfReal, checkHerReply, fanSaysUnderage, minorCoded } from "../brain/safety";
 import { FAN_TYPES, fanSystemPrompt } from "../sim/fans";
 import { TIMING, between, typingTime } from "./timing";
 import { markRead, sendMessage, showTyping } from "../fanvue/api";
-import { modeOf, type FanvueMode } from "../fanvue/inbound";
+import { modeOf, unseenFanMessages, type FanvueMode } from "../fanvue/inbound";
 
 type Phase = "idle" | "waiting" | "summarizing" | "thinking" | "sending" | "fan_thinking";
 
@@ -43,6 +43,7 @@ interface Turn {
   calls: number;
   restarts: number;
   regens: number;
+  retries?: number; // failed brain jobs resubmitted
   forceAuto?: boolean;
 }
 
@@ -75,6 +76,7 @@ interface State {
   answeredUpTo: number;
   wakeNoticeSent?: boolean;
   errors: number;
+  slowRetries?: number;
   sim?: Sim;
   summaryJob?: { endpoint: string; jobId: string; submittedAt: number; upTo: number };
 }
@@ -171,11 +173,26 @@ export class FanChat extends DurableObject<Env> {
         s.errors++;
         console.error("FanChat alarm failed", e);
         if (s.errors <= 3) await this.alarmIn(10_000);
-        else {
-          await this.out(s, `⚠️ Something went wrong: ${esc((e as Error).message)}`);
+        else if (s.source === "fanvue" && (s.slowRetries ?? 0) < 3) {
+          // A real fan is waiting: don't give up, read his messages again in 10 minutes.
+          s.slowRetries = (s.slowRetries ?? 0) + 1;
+          if (s.slowRetries === 1) await send(this.env, s.chatId, `⚠️ Couldn't answer @${esc(s.handle ?? "a fan")} (${esc((e as Error).message)}). Retrying in 10 minutes.`);
+          s.phase = "waiting";
+          s.turn = undefined;
+          s.errors = 0;
+          s.firstUnreadAt = s.readAt = Date.now() + 10 * 60_000;
+          await this.alarmAt(s.readAt);
+        } else {
+          await this.out(
+            s,
+            s.source === "fanvue"
+              ? `⚠️ Gave up answering @${esc(s.handle ?? "a fan")} for now: ${esc((e as Error).message)}. She'll try again when he writes.`
+              : `⚠️ Something went wrong: ${esc((e as Error).message)}`,
+          );
           s.phase = "idle";
           s.turn = undefined;
           s.errors = 0;
+          s.slowRetries = 0;
           if (s.sim) await this.endSim(s, "error");
         }
       }
@@ -197,6 +214,7 @@ export class FanChat extends DurableObject<Env> {
 
     if (fanSaysUnderage(text)) {
       await pauseFan(env, s.memberId, s.fanId, "said he is under 18");
+      await cancelFanPhotos(env, s.memberId, s.fanId);
       await addAlert(env, s.memberId, s.fanId, "fan_underage", text);
       await this.out(s, `🚨 <b>The fan said he's under 18.</b> She stopped replying and this fan is paused.\n<i>“${esc(text)}”</i>`);
       await this.cancelJobs(s);
@@ -242,6 +260,18 @@ export class FanChat extends DurableObject<Env> {
       s.phase = "idle";
       return;
     }
+    if (s.source === "fanvue") {
+      s.mode = modeOf(settings);
+      if (s.mode !== "dryrun") {
+        // She "opens" the chat: mark it read first, then pick up anything that arrived since the
+        // last poll (once read, the chat no longer shows up as unread, so it would be missed).
+        if (restarts === 0) await markRead(env, s.memberId, s.fanId);
+        for (const m of await unseenFanMessages(env, s.memberId, s.fanId).catch(() => [])) {
+          await this.fanMessage(s, m.text, m.uuid);
+          if (s.phase === "idle") return; // e.g. he said he's under 18: paused
+        }
+      }
+    }
     const fan = await getFan(env, s.memberId, s.fanId);
     const upTo = await lastFanMessageId(env, s.memberId, s.fanId);
     if (!fan || fan.paused || upTo <= s.answeredUpTo) {
@@ -273,10 +303,8 @@ export class FanChat extends DurableObject<Env> {
       minorFlag: minorCoded(unread),
       shouldOffer: fanMessages >= 5 && !offeredBefore,
     };
-    if (s.source === "fanvue") {
-      s.mode = modeOf(settings);
-      if (s.mode === "dryrun") await this.out(s, `👀 <b>Dry-run</b> · @${esc(s.handle ?? "fan")} wrote:\n<i>${esc(unread)}</i>`);
-      else if (restarts === 0) await markRead(env, s.memberId, s.fanId); // she "opens" the chat
+    if (s.source === "fanvue" && s.mode === "dryrun") {
+      await this.out(s, `👀 <b>Dry-run</b> · @${esc(s.handle ?? "fan")} wrote:\n<i>${esc(unread)}</i>`);
     }
     const canSell = await hasCatalog(env, s.memberId, s.source !== "fanvue");
     const photosOn = canGenerate(settings) && s.mode !== "dryrun" && salesNumber(settings, "photos_per_day") > 0;
@@ -358,6 +386,11 @@ export class FanChat extends DurableObject<Env> {
     if (job.state === "failed") {
       if (!turn.forceAuto && /tool_choice|required/i.test(job.error)) {
         turn.forceAuto = true; // this model can't be forced to use a tool: ask nicely instead
+        await this.submitTurn(s);
+        return;
+      }
+      if ((turn.retries ?? 0) < 2) {
+        turn.retries = (turn.retries ?? 0) + 1; // e.g. a worker crashed: try once more on a fresh job
         await this.submitTurn(s);
         return;
       }
@@ -481,6 +514,7 @@ export class FanChat extends DurableObject<Env> {
     }
 
     if (messages || ppvs.length) {
+      s.slowRetries = 0;
       const outbox = [...(messages ?? []), ...ppvs];
       s.outbox = outbox.filter((o, i) => outbox.findIndex((x) => JSON.stringify(x) === JSON.stringify(o)) === i); // no doubles
       s.answeredUpTo = turn.upTo;
@@ -591,7 +625,8 @@ export class FanChat extends DurableObject<Env> {
     let priceCents = Math.round(Number(args?.price) * 100);
     if (!Number.isFinite(priceCents)) priceCents = usual;
     // Below her lowest price: quietly use the lowest (the price shows on the locked photo anyway).
-    priceCents = Math.min(Math.max(priceCents, floor), MAX_PRICE_CENTS);
+    // ...and never far above it (e.g. the model writing cents instead of dollars).
+    priceCents = Math.min(Math.max(priceCents, floor), Math.max(floor, Math.round(usual * 1.5)), MAX_PRICE_CENTS);
     const caption = String(args?.caption ?? "").trim().slice(0, 500);
     const problem = caption ? checkHerReply(caption) : "is empty";
     if (problem) return { error: `Caption not OK: it ${problem}.` };

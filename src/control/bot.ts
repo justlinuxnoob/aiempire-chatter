@@ -55,7 +55,11 @@ export async function handleUpdate(env: Env, update: any, origin: string): Promi
       await clearMode(env, owner.id);
       return send(env, chatId, "OK, stopped. Nothing else changed. /settings to see everything.");
     }
-    if (mode.field.startsWith("price:") && !command) return answerPrice(env, owner, mode.field.slice(6), text);
+    if (mode.field.startsWith("price:")) {
+      if (!command) return answerPrice(env, owner, mode.field.slice(6), text);
+      await clearMode(env, owner.id); // /skip, /keep or anything else: leave the price as it is
+      return send(env, chatId, "OK, price unchanged. /catalog");
+    }
     if (!command || command === "skip" || command === "keep") return answer(env, owner, mode.mode, mode.field, text, command);
   }
 
@@ -228,6 +232,11 @@ async function stopAll(env: Env, owner: Member): Promise<void> {
 async function resetChat(env: Env, owner: Member): Promise<void> {
   await fanChat(env, owner, "test").reset();
   await deleteFan(env, owner.id, testFanId(owner));
+  // Also forget what she sold or made for the test fan, so limits start fresh.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM sales WHERE member_id = ? AND fan_id = ?").bind(owner.id, testFanId(owner)),
+    env.DB.prepare("DELETE FROM generations WHERE member_id = ? AND fan_id = ?").bind(owner.id, testFanId(owner)),
+  ]);
   await send(env, owner.telegram_chat_id, "🧹 Done. She's forgotten your test chat. /chat to start fresh as a new fan.");
 }
 
@@ -260,6 +269,10 @@ async function onButton(env: Env, query: any, origin: string): Promise<void> {
   if (kind === "selftest") return runSelfTest(env, owner);
   if (kind === "gen") {
     const [decision, id] = value.split(":");
+    // Remove the ✅/❌ buttons right away, so the photo can't be handled twice.
+    if (query.message) {
+      await tg(env, "editMessageReplyMarkup", { chat_id: query.message.chat.id, message_id: query.message.message_id, reply_markup: { inline_keyboard: [] } });
+    }
     return send(env, owner.telegram_chat_id, await review(env, Number(id), decision === "ok"));
   }
 

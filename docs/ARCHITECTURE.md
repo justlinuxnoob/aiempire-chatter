@@ -25,7 +25,8 @@ flowchart LR
 | `POST /telegram` | Telegram | verified by `X-Telegram-Bot-Api-Secret-Token` (SHA-256 of the bot token); handled in `ctx.waitUntil` |
 | `GET /fanvue/callback` | browser after "Connect Fanvue" | OAuth code + PKCE → tokens (encrypted) → webhook subscription attempt → Telegram confirmation |
 | `POST /fanvue/webhook` | Fanvue | `X-Fanvue-Signature: t=,v0=` HMAC-SHA256 over `t.body`, 5-minute window |
-| `scheduled` (cron `* * * * *`) | Cloudflare | `pollUnread` + `catalogTick` + `generationTick` + `selfTestTick` |
+| `scheduled` (cron `* * * * *`) | Cloudflare | `pollUnread` + `generationTick` + `selfTestTick` |
+| `scheduled` (cron `*/5 * * * *`) | Cloudflare | `catalogTick`: vault sync (every 30 min), photo descriptions, purchase checks |
 | `POST /admin/*` | scripts | only if `ADMIN_KEY` is set (Bearer); simulations, test code, connect link, raw Fanvue calls, self-test, approve |
 
 ## The conversation state machine (`src/chat/fanchat.ts`)
@@ -90,6 +91,10 @@ stateDiagram-v2
 Every minute: `GET /v1/chats?filter=unread` → for chats whose last message is from a fan
 and not yet seen → `GET /v1/chats/{fan}/messages?limit=10` → oldest first → `route()`:
 
+When she then "opens" a chat (`startTurn`) she marks it read on Fanvue **and immediately
+re-fetches** it (`unseenFanMessages`): a read chat no longer shows up as unread, so anything
+that arrived since the poll would otherwise be missed.
+
 1. Test code from `/fanvue → Add my test fan account`? → mark that fan `is_test`, mark seen, done.
 2. Mode **test** and not a test fan → ignore (real fans untouched).
 3. Older than 24 h → mark seen, ignore.
@@ -116,9 +121,11 @@ and not yet seen → `GET /v1/chats/{fan}/messages?limit=10` → oldest first �
 3. Limits (`/sales`): photos per fan per day, free teasers per day, no identical prompt, one open job per fan; ppv price clamped to the owner's range.
 4. Endpoint: teaser → SFW endpoint or NSFW fallback; ppv → NSFW. Input format matches the
    owner's generators (`{prompt, lora_url}` + size/strength for the SFW one).
-5. Cron collects the base64 JPEG → Fanvue multipart upload (`POST /v1/media/uploads`,
+5. Cron collects the base64 JPEG (row claimed `generating → uploading`) → checks the fan
+   isn't paused and the mode still allows it → Fanvue multipart upload (`POST /v1/media/uploads`,
    part URL, `PUT`, `PATCH` with ETag, wait for `ready`) → **sent automatically**
-   (or Telegram ✅/❌ if approval is switched on) → recorded as her message (+ sale for ppv).
+   (or Telegram ✅/❌ if approval is switched on; unapproved after 12 h → dropped) → recorded
+   as her message (+ sale for ppv). A fan saying he's under 18 cancels his pending photos.
 
 ## Safety layers
 

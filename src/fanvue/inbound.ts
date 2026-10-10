@@ -6,7 +6,7 @@
 import { hmacHex, sameText } from "../crypto";
 import { getFan, getOwner, getSettings, setSetting } from "../db";
 import { esc, send } from "../telegram";
-import { connectedAccounts, type Account } from "./auth";
+import { connectedAccounts, getAccount, type Account } from "./auth";
 import { markRead, recentChatMessages, unreadChats } from "./api";
 import { decrypt } from "../crypto";
 
@@ -107,7 +107,8 @@ async function pollAccount(env: Env, account: Account): Promise<void> {
   const settings = await getSettings(env, account.member_id);
   const mode = modeOf(settings);
   const chats = await unreadChats(env, account.member_id);
-  for (const chat of chats.slice(0, 25)) {
+  // Capped so one run stays well inside the free plan's 50 outgoing requests.
+  for (const chat of chats.slice(0, 15)) {
     const last = chat.lastMessage;
     if (!last || last.senderUuid === account.creator_uuid || last.senderRole !== "FAN") continue;
     if (await alreadySeen(env, account.member_id, last.uuid)) continue;
@@ -118,8 +119,7 @@ async function pollAccount(env: Env, account: Account): Promise<void> {
     for (const m of messages) {
       if (m.sender.uuid === account.creator_uuid || SKIP_TYPES.test(m.type ?? "")) continue;
       if (await alreadySeen(env, account.member_id, m.uuid)) continue;
-      const text = describe(m.text, false);
-      if (!text) continue;
+      const text = fanText(m.text);
       await route(env, account, {
         fanUuid: chat.user.uuid,
         messageUuid: m.uuid,
@@ -130,6 +130,29 @@ async function pollAccount(env: Env, account: Account): Promise<void> {
       });
     }
   }
+}
+
+/** A message without text (the list endpoint doesn't say what it was) is usually a photo or a tip. */
+function fanText(text: string | null): string {
+  return describe(text, false) || "[he sent you something without text, probably a photo]";
+}
+
+/**
+ * Fan messages in this chat that aren't in the database yet, oldest first.
+ * The conversation calls this right after marking the chat read, so a message that
+ * arrived since the last poll isn't lost (a read chat no longer shows up as unread).
+ */
+export async function unseenFanMessages(env: Env, memberId: string, fanUuid: string): Promise<{ uuid: string; text: string }[]> {
+  const account = await getAccount(env, memberId);
+  if (!account) return [];
+  const out: { uuid: string; text: string }[] = [];
+  for (const m of (await recentChatMessages(env, memberId, fanUuid, 10)).reverse()) {
+    if (m.sender.uuid === account.creator_uuid || SKIP_TYPES.test(m.type ?? "")) continue;
+    if (m.sentAt && Date.now() - Date.parse(m.sentAt) > MAX_AGE) continue;
+    if (await alreadySeen(env, memberId, m.uuid)) continue;
+    out.push({ uuid: m.uuid, text: fanText(m.text) });
+  }
+  return out;
 }
 
 async function alreadySeen(env: Env, memberId: string, messageUuid: string): Promise<boolean> {

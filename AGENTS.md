@@ -95,7 +95,9 @@ Everything else (name, persona, endpoint IDs, LoRA link, prices…) lives in the
 - Fanvue v1 `GET /chats/{uuid}/messages` defaults `markAsRead=false`; the bot marks read itself when she "opens" the chat (not in dry-run).
 - Fanvue prices are **cents**, minimum 300; the send endpoint doesn't enforce the $500 max, so the code does.
 - Refresh tokens rotate and are single-use (30 s grace): refresh happens under a D1 row lock (`refreshing_until`).
-- Generated photos are uploaded to Fanvue media, so they appear in her **vault** and get picked up by the catalog sync (resold to other fans). Intended.
+- Generated photos are uploaded to Fanvue media, so they appear in her **vault**; `syncVault` skips media uuids found in `generations` so they're never resold.
+- Free plan: **50 outgoing requests per invocation**. That's why the cron is split (`* * * * *` messages/photos, `*/5 * * * *` catalog/purchases), the poll handles ≤15 chats and ≤2 photos per run, and POSTs to Fanvue aren't retried on 5xx (could double-send).
+- Photo rows are claimed with conditional `UPDATE … WHERE status = ?` (`claim()` in `photos/generate.ts`) so overlapping runs or a double ✅ can't send twice.
 - The model refuses to repeat itself: identical lines (vs the last 30 messages) are dropped in `pollTurn`. Fake/mocked LLMs must vary their lines.
 - `wrangler d1 execute --json` output may include non-JSON warnings on stderr; redirect `2>/dev/null`.
 - In scripts, never `pkill -f` a pattern that appears in your own command line (it kills your shell); `scripts/e2e.sh` uses `[m]ock-server` style patterns.

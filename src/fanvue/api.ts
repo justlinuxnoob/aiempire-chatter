@@ -26,7 +26,9 @@ export async function fv(env: Env, memberId: string, method: string, path: strin
       await expireToken(env, memberId); // token went stale early: refresh once and retry
       continue;
     }
-    if ((res.status === 429 || res.status >= 502) && attempt < 2) {
+    // 429 means "not done, try later": always safe to retry. A 5xx after a POST may have
+    // gone through anyway (a duplicate message to the fan), so only GETs retry on those.
+    if ((res.status === 429 || (res.status >= 502 && method === "GET")) && attempt < 2) {
       const wait = Math.min(Number(res.headers.get("Retry-After") || 2), 10);
       await new Promise((r) => setTimeout(r, wait * 1000));
       continue;

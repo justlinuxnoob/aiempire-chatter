@@ -67,6 +67,18 @@ export async function recordOffer(
   ).bind(memberId, fanId, messageUuid, JSON.stringify(media), priceCents, Date.now()).run();
 }
 
+/** He paid for a locked photo: record it once (even if two checks race) and tell the owner. */
+async function markBought(env: Env, memberId: string, fanId: string, sale: { id: number; price_cents: number }, at: number): Promise<void> {
+  const r = await env.DB.prepare("UPDATE sales SET status = 'bought', bought_at = ?, checked_at = ? WHERE id = ? AND status = 'offered'")
+    .bind(at, Date.now(), sale.id).run();
+  if (r.meta.changes !== 1) return; // someone else already recorded it
+  await env.DB.prepare("UPDATE fans SET total_spent_cents = total_spent_cents + ? WHERE member_id = ? AND fan_id = ?")
+    .bind(sale.price_cents, memberId, fanId).run();
+  const fan = await env.DB.prepare("SELECT handle FROM fans WHERE member_id = ? AND fan_id = ?").bind(memberId, fanId).first<{ handle: string | null }>();
+  const owner = await getOwner(env);
+  if (owner) await send(env, owner.telegram_chat_id, `💰 <b>@${esc(fan?.handle ?? "a fan")}</b> bought a locked photo for $${(sale.price_cents / 100).toFixed(2)}`);
+}
+
 /** Is there a locked photo from the last 2 hours he hasn't opened? On Fanvue, checks live first. */
 export async function hasUnopenedOffer(env: Env, memberId: string, fanId: string, live: boolean): Promise<boolean> {
   const sale = await env.DB.prepare(
@@ -76,10 +88,7 @@ export async function hasUnopenedOffer(env: Env, memberId: string, fanId: string
   if (live && sale.message_uuid) {
     const msg = await fv(env, memberId, "GET", `/v1/chats/${fanId}/messages/${sale.message_uuid}`).catch(() => null);
     if (msg?.purchasedAt) {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE sales SET status = 'bought', bought_at = ?, checked_at = ? WHERE id = ?").bind(Date.now(), Date.now(), sale.id),
-        env.DB.prepare("UPDATE fans SET total_spent_cents = total_spent_cents + ? WHERE member_id = ? AND fan_id = ?").bind(sale.price_cents, memberId, fanId),
-      ]);
+      await markBought(env, memberId, fanId, sale, Date.parse(msg.purchasedAt) || Date.now());
       return false;
     }
   }
@@ -104,32 +113,36 @@ export async function simulatePurchase(env: Env, memberId: string, fanId: string
 export async function catalogTick(env: Env): Promise<void> {
   for (const account of await connectedAccounts(env)) {
     const memberId = account.member_id;
-    try {
-      const settings = await getSettings(env, memberId);
-      if (Date.now() - Number(settings.catalog_synced_at || 0) > 30 * 60_000) {
-        await syncVault(env, memberId);
-        await setSetting(env, memberId, "catalog_synced_at", String(Date.now()));
-      }
-      if (settings.llm_endpoint_id) await describePending(env, memberId, settings);
-      await checkPurchases(env, memberId);
-    } catch (e) {
-      console.error("catalog tick failed", memberId, e);
+    const settings = await getSettings(env, memberId);
+    // Each step on its own, so one failing (e.g. a missing permission) doesn't stop the others.
+    if (Date.now() - Number(settings.catalog_synced_at || 0) > 30 * 60_000) {
+      await setSetting(env, memberId, "catalog_synced_at", String(Date.now())); // also on failure: retry in 30 min, not every run
+      await syncVault(env, memberId).catch((e) => console.error("vault sync failed", memberId, e));
     }
+    if (settings.llm_endpoint_id) await describePending(env, memberId, settings).catch((e) => console.error("describe failed", memberId, e));
+    await checkPurchases(env, memberId).catch((e) => console.error("purchase check failed", memberId, e));
   }
 }
 
 /** Add new, ready vault images to the catalog (undescribed for now). */
 export async function syncVault(env: Env, memberId: string): Promise<number> {
+  // Photos she took for a specific fan are uploaded to the vault too; they're not resold.
+  const { results: own } = await env.DB.prepare("SELECT media_uuid FROM generations WHERE member_id = ? AND media_uuid IS NOT NULL")
+    .bind(memberId).all<{ media_uuid: string }>();
+  const generated = new Set(own.map((g) => g.media_uuid));
   let cursor = "";
   let added = 0;
   for (let page = 0; page < 6; page++) {
     const res = await fv(env, memberId, "GET", `/v1/media?size=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-    for (const m of res?.data ?? []) {
-      if (m.status !== "ready" || (m.mediaType && m.mediaType !== "image")) continue;
-      const r = await env.DB.prepare(
-        "INSERT OR IGNORE INTO catalog (member_id, media_uuid, source, created_at, updated_at) VALUES (?, ?, 'vault', ?, ?)",
-      ).bind(memberId, m.uuid, Date.now(), Date.now()).run();
-      added += r.meta.changes;
+    const fresh = (res?.data ?? []).filter(
+      (m: any) => m.status === "ready" && (!m.mediaType || m.mediaType === "image") && !generated.has(m.uuid),
+    );
+    if (fresh.length) {
+      const inserts = fresh.map((m: any) =>
+        env.DB.prepare("INSERT OR IGNORE INTO catalog (member_id, media_uuid, source, created_at, updated_at) VALUES (?, ?, 'vault', ?, ?)")
+          .bind(memberId, m.uuid, Date.now(), Date.now()),
+      );
+      for (const r of await env.DB.batch(inserts)) added += r.meta.changes;
     }
     cursor = res?.nextCursor ?? "";
     if (!cursor) break;
@@ -149,7 +162,8 @@ async function describePending(env: Env, memberId: string, settings: Record<stri
     "SELECT media_uuid, describe_job FROM catalog WHERE member_id = ? AND describe_job IS NOT NULL LIMIT 10",
   ).bind(memberId).all<{ media_uuid: string; describe_job: string }>();
   for (const item of running) {
-    const job = await checkJob(env, endpoint, item.describe_job);
+    // A job that can't be checked any more (endpoint changed, result expired) is simply started again later.
+    const job = await checkJob(env, endpoint, item.describe_job).catch(() => ({ state: "failed" as const, error: "unreachable" }));
     if (job.state === "waiting" || job.state === "running") continue;
     const parsed = job.state === "done" ? parseDescription(parseCompletion(job.output).text) : null;
     if (parsed) {
@@ -160,13 +174,13 @@ async function describePending(env: Env, memberId: string, settings: Record<stri
       await env.DB.prepare("UPDATE catalog SET describe_job = NULL WHERE member_id = ? AND media_uuid = ?").bind(memberId, item.media_uuid).run();
     }
   }
-  if (running.length >= 3) return;
+  if (running.length >= 2) return;
 
   // Start a few new ones (3 attempts max per photo).
   const { results: todo } = await env.DB.prepare(
     `SELECT media_uuid FROM catalog WHERE member_id = ? AND described_at IS NULL AND describe_job IS NULL AND describe_attempts < 3
      ORDER BY created_at LIMIT ?`,
-  ).bind(memberId, 3 - running.length).all<{ media_uuid: string }>();
+  ).bind(memberId, 2 - running.length).all<{ media_uuid: string }>();
   for (const item of todo) {
     const image = await imageDataUrl(env, memberId, item.media_uuid);
     if (!image) {
@@ -227,12 +241,7 @@ async function checkPurchases(env: Env, memberId: string): Promise<void> {
   for (const sale of results) {
     const msg = await fv(env, memberId, "GET", `/v1/chats/${sale.fan_id}/messages/${sale.message_uuid}`).catch(() => null);
     if (msg?.purchasedAt) {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE sales SET status = 'bought', bought_at = ?, checked_at = ? WHERE id = ?").bind(Date.parse(msg.purchasedAt) || now, now, sale.id),
-        env.DB.prepare("UPDATE fans SET total_spent_cents = total_spent_cents + ? WHERE member_id = ? AND fan_id = ?").bind(sale.price_cents, memberId, sale.fan_id),
-      ]);
-      const owner = await getOwner(env);
-      if (owner) await send(env, owner.telegram_chat_id, `💰 <b>@${esc(sale.handle ?? "a fan")}</b> bought a locked photo for $${(sale.price_cents / 100).toFixed(2)}`);
+      await markBought(env, memberId, sale.fan_id, sale, Date.parse(msg.purchasedAt) || now);
     } else {
       await env.DB.prepare("UPDATE sales SET checked_at = ? WHERE id = ?").bind(now, sale.id).run();
     }

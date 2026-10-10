@@ -130,7 +130,7 @@ export async function accessToken(env: Env, memberId: string): Promise<string> {
       "SELECT access_token, refresh_token, expires_at, refreshing_until, status FROM fanvue_accounts WHERE member_id = ?",
     ).bind(memberId).first<any>();
     if (!row || row.status !== "connected") throw new FanvueDisconnected();
-    if (row.expires_at - Date.now() > 120_000) return decrypt(env, row.access_token);
+    if (row.expires_at - Date.now() > 120_000) return readToken(env, memberId, row.access_token);
 
     // Refresh tokens are single-use, so only one refresh may run at a time: take a short lock.
     const now = Date.now();
@@ -141,7 +141,7 @@ export async function accessToken(env: Env, memberId: string): Promise<string> {
       await new Promise((r) => setTimeout(r, 1000)); // someone else is refreshing: wait for their result
       continue;
     }
-    const tokens = await tokenRequest(env, { grant_type: "refresh_token", refresh_token: await decrypt(env, row.refresh_token) });
+    const tokens = await tokenRequest(env, { grant_type: "refresh_token", refresh_token: await readToken(env, memberId, row.refresh_token) });
     if ("error" in tokens) {
       if (tokens.fatal) await markDisconnected(env, memberId, tokens.error);
       else await env.DB.prepare("UPDATE fanvue_accounts SET refreshing_until = NULL WHERE member_id = ?").bind(memberId).run();
@@ -157,6 +157,16 @@ export async function accessToken(env: Env, memberId: string): Promise<string> {
     return tokens.access_token;
   }
   throw new Error("Timed out waiting for a Fanvue token refresh");
+}
+
+/** Stored tokens can't be read if FANVUE_CLIENT_SECRET changed: ask the owner to reconnect. */
+async function readToken(env: Env, memberId: string, stored: string): Promise<string> {
+  try {
+    return await decrypt(env, stored);
+  } catch {
+    await markDisconnected(env, memberId, "the saved login can't be read any more (was the Fanvue client secret changed?)");
+    throw new FanvueDisconnected();
+  }
 }
 
 /** Force the next accessToken() call to refresh (used after a 401). */

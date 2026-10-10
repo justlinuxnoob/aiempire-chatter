@@ -22,7 +22,7 @@ Your Cloudflare Worker  ── this repo, free plan
    ↓
 Chat brain on RunPod  ── decides: just chat, sell a vault photo, or take a new one
    ├─ free teaser  → your SFW image endpoint  ─┐
-   └─ paid photo   → your NSFW image endpoint ─┴→ uploaded to Fanvue → your ✅ in Telegram → sent to the fan
+   └─ paid photo   → your NSFW image endpoint ─┴→ uploaded to Fanvue → sent to the fan (locked if paid)
 ```
 
 | Piece | Where | Cost |
@@ -93,7 +93,8 @@ troubleshooting. The short version:
 - **Haggling:** she can come down once, never below your floor (`/sales`, default 70%).
 - **No spam:** no new locked photo while the last one is unopened; never re-sells what he bought.
 - **Vault photos** (`/catalog`): new vault images are picked up every 30 minutes and
-  described by the AI with a suggested price, which you can change.
+  described by the AI with a suggested price, which you can change. Photos she took for a
+  specific fan are not resold.
 - **New photos on demand:** she writes the prompt with your exact trigger word and
   hair/eyes first, following [docs/image-prompt-rules.md](docs/image-prompt-rules.md).
   Free teasers (default max 1 per fan per day) or paid locked photos (your price range).

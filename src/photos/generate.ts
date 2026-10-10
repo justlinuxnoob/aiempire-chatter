@@ -5,7 +5,7 @@
 //   → approval in Telegram (✅/❌), unless turned off → sent to the fan (free or locked)
 
 import { addAlert, addMessage, getOwner, getSettings, type Source } from "../db";
-import { checkJob, submitJob } from "../runpod";
+import { cancelJob, checkJob, submitJob } from "../runpod";
 import { esc, send, sendPhoto, type Button } from "../telegram";
 import { fv } from "../fanvue/api";
 import { recordOffer, MAX_PRICE_CENTS, MIN_PRICE_CENTS } from "../catalog/catalog";
@@ -86,7 +86,7 @@ export async function startGeneration(
   const caption = String(args?.caption ?? "").trim().slice(0, 500) || "took this one just for you 😘";
 
   const recent = await env.DB.prepare(
-    `SELECT COUNT(*) AS n, SUM(status IN ('generating', 'review')) AS open, SUM(kind = 'teaser') AS teasers,
+    `SELECT COUNT(*) AS n, SUM(status IN ('generating', 'uploading', 'review', 'sending')) AS open, SUM(kind = 'teaser') AS teasers,
        SUM(prompt = ?) AS same FROM generations WHERE member_id = ? AND fan_id = ? AND created_at > ?`,
   ).bind(built.prompt, memberId, fanId, Date.now() - 86400_000).first<{ n: number; open: number; teasers: number; same: number }>();
   if (recent?.open) return { error: "You're already taking a photo for him. Tell him it's coming." };
@@ -127,7 +127,7 @@ export async function photosForFan(env: Env, memberId: string, fanId: string): P
     "SELECT kind, status, created_at FROM generations WHERE member_id = ? AND fan_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 3",
   ).bind(memberId, fanId, Date.now() - 86400_000).all<{ kind: Kind; status: string; created_at: number }>();
   return results.map((g) => {
-    if (g.status === "generating" || g.status === "review") return `You're still taking a ${g.kind === "ppv" ? "paid" : "free"} photo for him. It's coming soon.`;
+    if (["generating", "uploading", "review", "sending"].includes(g.status)) return `You're still taking a ${g.kind === "ppv" ? "paid" : "free"} photo for him. It's coming soon.`;
     if (g.status === "rejected" || g.status === "failed") return "A photo you were taking for him didn't turn out. Don't mention it unless he asks; offer something else.";
     return "";
   }).filter(Boolean);
@@ -136,8 +136,12 @@ export async function photosForFan(env: Env, memberId: string, fanId: string): P
 // ── every minute ─────────────────────────────────────────────────────────
 
 export async function generationTick(env: Env): Promise<void> {
+  // A photo waiting for approval for 12 hours is dropped, so the fan isn't blocked forever.
+  await env.DB.prepare("UPDATE generations SET status = 'rejected', error = 'not approved in time', updated_at = ? WHERE status = 'review' AND updated_at < ?")
+    .bind(Date.now(), Date.now() - 12 * 3600_000).run();
+  // Two per run keeps each run inside the free plan's 50 outgoing requests.
   const { results } = await env.DB.prepare(
-    "SELECT * FROM generations WHERE status = 'generating' ORDER BY created_at LIMIT 5",
+    "SELECT * FROM generations WHERE status = 'generating' ORDER BY created_at LIMIT 2",
   ).all<any>();
   for (const g of results) {
     try {
@@ -156,6 +160,10 @@ async function advance(env: Env, g: any): Promise<void> {
     return;
   }
   if (job.state === "failed") return fail(env, g, job.error);
+  // Claim it, so an overlapping run can't upload or send it a second time.
+  if (!(await claim(env, g.id, "generating", "uploading"))) return;
+  const blocked = await whyNotSend(env, g);
+  if (blocked) return reject(env, g, blocked);
   const b64: string | undefined = job.output?.image;
   if (!b64) return fail(env, g, `no image in the result: ${JSON.stringify(job.output).slice(0, 200)}`);
   const bytes = fromBase64(b64);
@@ -166,15 +174,48 @@ async function advance(env: Env, g: any): Promise<void> {
   }
   const settings = await getSettings(env, g.member_id);
   if (g.source === "fanvue" && approvalsOn(settings)) {
-    await env.DB.prepare("UPDATE generations SET status = 'review', updated_at = ? WHERE id = ?").bind(Date.now(), g.id).run();
     const owner = await getOwner(env);
     const fan = await env.DB.prepare("SELECT handle FROM fans WHERE member_id = ? AND fan_id = ?").bind(g.member_id, g.fan_id).first<{ handle: string }>();
     const what = g.kind === "ppv" ? `locked · $${(g.price_cents / 100).toFixed(2)}` : "free teaser";
     const buttons: Button[][] = [[{ text: "✅ Send", callback_data: `gen:ok:${g.id}` }, { text: "❌ Don't send", callback_data: `gen:no:${g.id}` }]];
-    if (owner) await sendPhoto(env, owner.telegram_chat_id, bytes, `📸 For @${fan?.handle ?? "fan"} (${what})\n💋 ${g.caption}`, buttons);
+    const shown = owner && (await sendPhoto(env, owner.telegram_chat_id, bytes, `📸 For @${fan?.handle ?? "fan"} (${what})\n💋 ${g.caption}`, buttons));
+    if (!shown) return fail(env, g, "couldn't show the photo to you in Telegram for approval");
+    await env.DB.prepare("UPDATE generations SET status = 'review', updated_at = ? WHERE id = ?").bind(Date.now(), g.id).run();
     return;
   }
   await deliver(env, g, bytes);
+}
+
+/** Atomically move a photo from one status to another; false if someone else already did. */
+async function claim(env: Env, id: number, from: string, to: string): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE generations SET status = ?, updated_at = ? WHERE id = ? AND status = ?").bind(to, Date.now(), id, from).run();
+  return r.meta.changes === 1;
+}
+
+/** Things that changed while the photo was being made: the fan got paused, or she was switched to test/dry-run. */
+async function whyNotSend(env: Env, g: any): Promise<string | null> {
+  if (g.source !== "fanvue") return null;
+  const fan = await env.DB.prepare("SELECT paused, is_test FROM fans WHERE member_id = ? AND fan_id = ?").bind(g.member_id, g.fan_id).first<{ paused: number; is_test: number }>();
+  if (!fan || fan.paused) return "the fan is paused";
+  const mode = (await getSettings(env, g.member_id)).fanvue_mode || "test";
+  if (mode === "dryrun") return "she's in dry-run mode";
+  if (mode !== "live" && !fan.is_test) return "she's in test mode and this isn't your test fan";
+  return null;
+}
+
+async function reject(env: Env, g: any, why: string): Promise<void> {
+  await env.DB.prepare("UPDATE generations SET status = 'rejected', error = ?, updated_at = ? WHERE id = ?").bind(why, Date.now(), g.id).run();
+}
+
+/** Under-18 or similar: drop every photo still being made or waiting for approval for this fan. */
+export async function cancelFanPhotos(env: Env, memberId: string, fanId: string): Promise<void> {
+  const { results } = await env.DB.prepare(
+    "SELECT id, endpoint, job_id FROM generations WHERE member_id = ? AND fan_id = ? AND status IN ('generating', 'review')",
+  ).bind(memberId, fanId).all<{ id: number; endpoint: string; job_id: string | null }>();
+  for (const g of results) {
+    if (g.job_id) await cancelJob(env, g.endpoint, g.job_id);
+    await env.DB.prepare("UPDATE generations SET status = 'rejected', error = 'fan paused', updated_at = ? WHERE id = ?").bind(Date.now(), g.id).run();
+  }
 }
 
 /** Send the photo to the fan (Fanvue), or to the owner's Telegram for /chat tests. */
@@ -206,12 +247,20 @@ export async function deliver(env: Env, g: any, bytes?: Uint8Array): Promise<voi
 /** ✅ / ❌ in Telegram. */
 export async function review(env: Env, id: number, approve: boolean): Promise<string> {
   const g = await env.DB.prepare("SELECT * FROM generations WHERE id = ?").bind(id).first<any>();
-  if (!g || g.status !== "review") return "That one was already handled.";
-  if (!approve) {
-    await env.DB.prepare("UPDATE generations SET status = 'rejected', updated_at = ? WHERE id = ?").bind(Date.now(), id).run();
-    return "❌ Not sent. She'll offer him something else.";
+  // Claimed atomically: a double tap can't send it twice.
+  if (!g || !(await claim(env, id, "review", approve ? "sending" : "rejected"))) return "That one was already handled.";
+  if (!approve) return "❌ Not sent. She'll offer him something else.";
+  const blocked = await whyNotSend(env, g);
+  if (blocked) {
+    await reject(env, g, blocked);
+    return `Not sent: ${blocked}.`;
   }
-  await deliver(env, g);
+  try {
+    await deliver(env, g);
+  } catch (e) {
+    await fail(env, g, String((e as Error).message ?? e));
+    return "⚠️ Sending failed.";
+  }
   return "✅ Sent to the fan.";
 }
 
@@ -231,13 +280,13 @@ async function uploadToFanvue(env: Env, memberId: string, bytes: Uint8Array, fil
   if (!put.ok) throw new Error(`upload to Fanvue storage failed: HTTP ${put.status}`);
   const etag = put.headers.get("ETag") ?? "";
   await fv(env, memberId, "PATCH", `/v1/media/uploads/${session.uploadId}`, { parts: [{ PartNumber: 1, ETag: etag }] });
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 6; i++) {
     const media = await fv(env, memberId, "GET", `/v1/media/${session.mediaUuid}`);
     if (media?.status === "ready") return session.mediaUuid;
     if (media?.status === "error") throw new Error("Fanvue couldn't process the photo");
     await new Promise((r) => setTimeout(r, 2000));
   }
-  throw new Error("Fanvue is still processing the photo after 20 seconds");
+  throw new Error("Fanvue is still processing the photo after 12 seconds");
 }
 
 function fromBase64(b64: string): Uint8Array {

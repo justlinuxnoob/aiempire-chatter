@@ -48,8 +48,12 @@ export default {
   },
 
   // Every minute: catch any Fanvue message the webhook missed.
-  async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(Promise.all([pollUnread(env), catalogTick(env), generationTick(env), selfTestTick(env)]));
+  // Two schedules, so each run stays inside the free plan's 50 outgoing requests:
+  //   every minute:    new fan messages, photos being made, /test results
+  //   every 5 minutes: vault catalog (sync, descriptions) and purchase checks
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === "*/5 * * * *") ctx.waitUntil(catalogTick(env));
+    else ctx.waitUntil(Promise.all([pollUnread(env), generationTick(env), selfTestTick(env)]));
   },
 } satisfies ExportedHandler<Env>;
 
